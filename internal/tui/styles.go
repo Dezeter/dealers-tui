@@ -28,4 +28,8 @@ var (
 
 	alertCritStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Background(lipgloss.Color("124")).Bold(true)
 	alertWarnStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("0")).Background(lipgloss.Color("214")).Bold(true)
+
+	// updateNoticeStyle highlights the "new version available" banner (friendly
+	// green, distinct from the orange/red alert chips).
+	updateNoticeStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("0")).Background(lipgloss.Color("42")).Bold(true)
 )

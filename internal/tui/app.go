@@ -56,6 +56,14 @@ type Deps struct {
 
 	// Recipe is the UI-editable autopilot step order; nil = none.
 	Recipe *recipe.Store
+
+	// Version is the running build version (main.version), shown in the header.
+	Version string
+
+	// UpdateCheck queries GitHub once on startup for a newer release. It returns
+	// the newer version tag and its release-page URL, or ("","") when up to date,
+	// disabled, or the check failed (best-effort). nil = feature off.
+	UpdateCheck func(context.Context) (latest, url string)
 }
 
 // IsAlly reports whether a dealer is on the do-not-attack list.
@@ -156,7 +164,17 @@ type App struct {
 	steps    StepsModel
 	alerts   []dealer.Alert
 	balance  *big.Int
+	update   updateInfo // populated once if a newer release is found
 }
+
+// updateInfo carries the result of the startup GitHub release check.
+type updateInfo struct {
+	latest string // newer version tag, e.g. "v0.2.0" ("" = up to date / unknown)
+	url    string // release-page URL
+}
+
+// updateMsg delivers the release-check result into the Elm loop.
+type updateMsg updateInfo
 
 // tickMsg drives periodic refresh of the active screen.
 type tickMsg time.Time
@@ -186,7 +204,26 @@ func NewApp(deps Deps) App {
 }
 
 func (a App) Init() tea.Cmd {
-	return tea.Batch(a.fleet.Refresh(), tickAfter(a.deps.Poll))
+	return tea.Batch(a.fleet.Refresh(), tickAfter(a.deps.Poll), a.checkUpdateCmd())
+}
+
+// checkUpdateCmd runs the GitHub release check once, off the UI goroutine, and
+// yields an updateMsg only when a newer version is available. Returns nil (a
+// no-op for tea.Batch) when the feature is disabled.
+func (a App) checkUpdateCmd() tea.Cmd {
+	fn := a.deps.UpdateCheck
+	if fn == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		latest, url := fn(ctx)
+		if latest == "" {
+			return nil // up to date, disabled, or check failed — say nothing
+		}
+		return updateMsg{latest: latest, url: url}
+	}
 }
 
 func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -227,6 +264,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.detail, cmd = a.detail.Update(msg)
 			return a, cmd
 		}
+
+	case updateMsg:
+		a.update = updateInfo(msg)
+		return a, nil
 
 	case backToFleetMsg:
 		a.screen = screenFleet
@@ -387,6 +428,9 @@ func (a App) View() string {
 	)
 
 	parts := []string{header}
+	if bar := a.updateBar(); bar != "" {
+		parts = append(parts, bar)
+	}
 	if bar := a.alertBar(); bar != "" {
 		parts = append(parts, bar)
 	}
@@ -424,6 +468,24 @@ func (a App) walletLine() string {
 		}
 	}
 	return s
+}
+
+// updateBar renders the "new version available" notice once the startup GitHub
+// check finds a newer release. The version is an OSC 8 hyperlink to the release
+// page (clickable in supporting terminals). Empty until/unless an update exists.
+func (a App) updateBar() string {
+	if a.update.latest == "" {
+		return ""
+	}
+	ver := a.update.latest
+	if a.update.url != "" {
+		ver = osc8(a.update.url, a.update.latest)
+	}
+	line := updateNoticeStyle.Render(" ⬆ update available: " + ver + " ")
+	if a.deps.Version != "" {
+		line += helpStyle.Render(" (you have " + a.deps.Version + ")")
+	}
+	return line
 }
 
 // alertBar renders the persistent alerts overlay (FR10). Empty when all clear.

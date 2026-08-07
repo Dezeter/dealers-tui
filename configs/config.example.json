@@ -12,5 +12,6 @@
   "dealer_strategies": {},
   "poll_interval_seconds": 15,
   "db_path": "./dealers.db",
-  "min_eth_runway_wei": "5000000000000000"
+  "min_eth_runway_wei": "5000000000000000",
+  "github_repo": "Dezeter/dealers-tui"
 }

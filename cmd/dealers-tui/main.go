@@ -34,6 +34,7 @@ import (
 	"dealers/internal/settings"
 	"dealers/internal/store"
 	"dealers/internal/tui"
+	"dealers/internal/update"
 	"dealers/internal/wallet"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -179,7 +180,19 @@ func runFleet(args []string) error {
 		Owner:     b.owner,
 		Poll:      time.Duration(b.cfg.PollIntervalSeconds) * time.Second,
 		UI:        &tui.UIState{},
+		Version:   version,
 		BalanceFn: func(ctx context.Context) (*big.Int, error) { return b.cl.BalanceAt(ctx, b.owner) },
+	}
+	// Best-effort "new release" notice: poll the configured GitHub repo once on
+	// startup and surface a newer tag in the header. Any failure is silent.
+	if repo := b.cfg.GitHubRepo; repo != "" {
+		deps.UpdateCheck = func(ctx context.Context) (string, string) {
+			rel, err := update.Latest(ctx, repo)
+			if err != nil || !update.Newer(version, rel.Version) {
+				return "", ""
+			}
+			return rel.Version, rel.URL
+		}
 	}
 	if min, ok := new(big.Int).SetString(b.cfg.MinETHRunwayWei, 10); ok {
 		deps.MinRunwayWei = min

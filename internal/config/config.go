@@ -52,6 +52,11 @@ type Config struct {
 	// MinETHRunwayWei warns/blocks batch actions below this balance (FR10/FR11).
 	// Stored as a decimal string to survive JSON without float rounding.
 	MinETHRunwayWei string `json:"min_eth_runway_wei,omitempty"`
+
+	// GitHubRepo ("owner/name") is polled once on startup for a newer release so
+	// the client can show an "update available" notice. Defaults to the upstream
+	// repo; set "" to disable the check entirely.
+	GitHubRepo string `json:"github_repo,omitempty"`
 }
 
 // WalletConfig separates the on-chain OWNER identity from the SIGNER key.
@@ -95,8 +100,10 @@ const (
 	DefaultPollIntervalSeconds = 15
 	DefaultDBPath              = "./dealers.db"
 	DefaultKeyringService      = "dealers-tui"
+	// DefaultGitHubRepo is polled for release-update notifications. Set
+	// github_repo to any value without a "/" (e.g. "none") to disable the check.
+	DefaultGitHubRepo = "Dezeter/dealers-tui"
 )
-
 
 // Load reads and validates config.json from path, applying defaults.
 func Load(path string) (*Config, error) {
@@ -126,6 +133,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Wallet.KeyringService == "" {
 		c.Wallet.KeyringService = DefaultKeyringService
+	}
+	if c.GitHubRepo == "" {
+		c.GitHubRepo = DefaultGitHubRepo
 	}
 	if c.AutopilotStrategy == "" {
 		c.AutopilotStrategy = "pve"
