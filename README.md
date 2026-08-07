@@ -56,10 +56,11 @@ CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -o dealers-tui.exe ./
 
 ## Docs
 
-- [`docs/auto-mode-ru.md`](docs/auto-mode-ru.md) — what the autopilot does, step by step (RU)
-- [`docs/telegram-guide.md`](docs/telegram-guide.md) — setup guide (RU)
-- [`docs/game-basics-ru.md`](docs/game-basics-ru.md) — game basics (RU)
-- [`docs/CHAIN_REFERENCE.md`](docs/CHAIN_REFERENCE.md) — contract reference
+Setup & usage guide — [English](docs/telegram-guide-en.md) · [Русский](docs/telegram-guide-ru.md)
+What the autopilot does, step by step — [English](docs/auto-mode-en.md) · [Русский](docs/auto-mode-ru.md)
+Game basics — [English](docs/game-basics-en.md) · [Русский](docs/game-basics-ru.md)
+
+- [`docs/CHAIN_REFERENCE.md`](docs/CHAIN_REFERENCE.md) — on-chain contract reference (for developers)
 
 ## Security
 
@@ -67,3 +68,7 @@ CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -o dealers-tui.exe ./
 - Do not commit `config.json` or the local `*.json` state files — they are git-ignored.
 - The autopilot can spend in-game `$CASH` (missions, heists, season entry) and, only if you enable the
   bail toggle, ETH for jail bail. Review the Settings and Steps screens before enabling it.
+
+## License
+
+[MIT](LICENSE) © 2026 Dezeter
