@@ -1,0 +1,130 @@
+package tui
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"time"
+
+	"dealers/internal/dealer"
+
+	tea "github.com/charmbracelet/bubbletea"
+)
+
+// Batch daily check-in (DealersBankHeist.checkIn): one keypress checks in every
+// eligible dealer in the fleet. Jailed / uninitialized dealers and those that
+// already checked in today are skipped so no gas is wasted on a guaranteed
+// revert. Check-in is gas-only — it stakes no $CASH or ETH.
+
+// checkInStatus is the per-dealer outcome of a batch check-in.
+type checkInStatus string
+
+const (
+	ciDone    checkInStatus = "checked in"
+	ciAlready checkInStatus = "already today"
+	ciJailed  checkInStatus = "jailed"
+	ciUninit  checkInStatus = "uninitialized"
+	ciSkipped checkInStatus = "not eligible"
+	ciError   checkInStatus = "error"
+)
+
+// checkInResult is one dealer's outcome; err is set only for infra failures.
+type checkInResult struct {
+	tokenID uint64
+	status  checkInStatus
+	err     error
+}
+
+// checkInDoneMsg carries a completed batch check-in back to the UI.
+type checkInDoneMsg struct {
+	results []checkInResult
+}
+
+// checkInAllCmd runs the batch off the UI goroutine over the given snapshots.
+func checkInAllCmd(deps Deps, snaps []dealer.Snapshot) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		defer cancel()
+		return checkInDoneMsg{results: runCheckInAll(ctx, deps, snaps, time.Now().UTC().Unix())}
+	}
+}
+
+// runCheckInAll checks in every eligible dealer sequentially (the sender
+// serializes sends anyway, so there is no concurrency win — and sequential keeps
+// the reporting order stable). Best-effort season/focus reads only ever cause a
+// redundant attempt, never a skipped check-in.
+func runCheckInAll(ctx context.Context, deps Deps, snaps []dealer.Snapshot, nowUnix int64) []checkInResult {
+	out := make([]checkInResult, 0, len(snaps))
+	// Read the season fresh: right after a rollover a cached (old) season would
+	// mis-skip dealers as "already checked in" and route enter()/checkIn to the
+	// wrong season.
+	deps.Reader.InvalidateCheckins()
+	season, seasonErr := deps.Reader.ActiveSeason(ctx)
+	for _, s := range snaps {
+		r := checkInResult{tokenID: s.TokenID}
+		switch {
+		case s.State == nil || !s.State.IsInitialized:
+			r.status = ciUninit
+		case s.State.IsJailed:
+			r.status = ciJailed
+		default:
+			if seasonErr == nil {
+				if done, err := deps.Reader.CheckedInToday(ctx, season, s.TokenID, nowUnix); err == nil && done {
+					r.status = ciAlready
+					out = append(out, r)
+					continue
+				}
+			}
+			if err := deps.Manager.CheckIn(ctx, s.TokenID); err != nil {
+				if strings.Contains(err.Error(), "reverted on chain") {
+					r.status = ciSkipped // already checked in today, or season not open
+				} else {
+					r.status, r.err = ciError, err
+				}
+			} else {
+				r.status = ciDone
+			}
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+// checkInSummary renders a one-line notice from the batch results, e.g.
+// "check-in: 3 done · 1 already · 1 jailed".
+func checkInSummary(results []checkInResult) string {
+	if len(results) == 0 {
+		return statusBarStyle.Render("check-in: no dealers")
+	}
+	counts := map[checkInStatus]int{}
+	var firstErr error
+	for _, r := range results {
+		counts[r.status]++
+		if r.status == ciError && firstErr == nil {
+			firstErr = r.err
+		}
+	}
+	// Stable, human-ordered summary.
+	order := []struct {
+		st    checkInStatus
+		label string
+	}{
+		{ciDone, "done"},
+		{ciAlready, "already"},
+		{ciSkipped, "not eligible"},
+		{ciJailed, "jailed"},
+		{ciUninit, "uninit"},
+		{ciError, "errors"},
+	}
+	var parts []string
+	for _, o := range order {
+		if n := counts[o.st]; n > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", n, o.label))
+		}
+	}
+	line := okStyle.Render("check-in: ") + strings.Join(parts, " · ")
+	if firstErr != nil {
+		line += "  " + errStyle.Render("⚠ "+firstErr.Error())
+	}
+	return line
+}

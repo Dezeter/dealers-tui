@@ -1,0 +1,23 @@
+# build outputs (anchored to repo root so they don't match the cmd/dealers-tui/ source dir)
+/dealers-tui
+/dealers-tui.exe
+/dealers-tui-linux
+/dist/
+/bin/
+*.zip
+*.tar.gz
+
+# local runtime state (never commit — config has the wallet address; db has state)
+config.json
+dealers.db
+dealers.db-shm
+dealers.db-wal
+dealers.log
+allies.json
+strategies.json
+settings.json
+recipes.json
+
+# development-only docs (not needed to build; kept local, not published)
+CLAUDE.md
+dealers-tui-tz.md

@@ -1,0 +1,5 @@
+# Normalise line endings so the repo is consistent regardless of contributor OS.
+* text=auto eol=lf
+
+# PowerShell build helper is Windows-oriented.
+*.ps1 text eol=crlf

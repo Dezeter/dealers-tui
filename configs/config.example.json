@@ -1,0 +1,16 @@
+{
+  "active_network": "mainnet",
+  "wallet": {
+    "address": "0xYOUR_AGW_OR_EOA_THAT_HOLDS_THE_DEALERS",
+    "source": "keyring",
+    "keyring_service": "dealers-tui",
+    "keyring_user": "mainnet-owner"
+  },
+  "dealer_token_ids": [],
+  "allies": [],
+  "autopilot_strategy": "pve",
+  "dealer_strategies": {},
+  "poll_interval_seconds": 15,
+  "db_path": "./dealers.db",
+  "min_eth_runway_wei": "5000000000000000"
+}
