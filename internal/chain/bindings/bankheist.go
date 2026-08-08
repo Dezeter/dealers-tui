@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"math/big"
+	"strings"
 	"time"
 
+	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -92,6 +94,46 @@ func (r *Reader) Entered(ctx context.Context, seasonID, tokenID uint64) (bool, e
 // BankHeistAddr returns the DealersBankHeist address for the reader's network
 // (zero if not deployed there).
 func (r *Reader) BankHeistAddr() common.Address { return r.cl.Net.Contracts.DealersBankHeist }
+
+// CanEnterSeason simulates enter(tokenId) as a read-only eth_call from owner (the
+// on-chain msg.sender for the dealer's AGW actions) to tell whether the one-time
+// season entry would go through — chiefly, whether the dealer can afford the $CASH
+// entry fee, which has no public getter. Because the AGW is the msg.sender on both
+// the real tx and this From=owner simulation, a simulated revert reliably predicts
+// a real one. Returns:
+//
+//	(true,  nil) enter would succeed
+//	(false, nil) enter would REVERT (e.g. not enough $CASH) — skip it, save the gas
+//	(false, err) inconclusive (RPC/transport error) — caller should attempt as usual
+//
+// so an ambiguous read never wrongly blocks a check-in.
+func (r *Reader) CanEnterSeason(ctx context.Context, owner common.Address, tokenID uint64) (bool, error) {
+	addr := r.cl.Net.Contracts.DealersBankHeist
+	if addr == (common.Address{}) {
+		return false, fmt.Errorf("bank heist contract not deployed")
+	}
+	data, err := PackEnter(tokenID)
+	if err != nil {
+		return false, err
+	}
+	// enter() returns nothing, so an empty result with no error means "would pass";
+	// call the client directly (r.call treats empty output as an error).
+	if _, err := r.cl.CallContract(ctx, ethereum.CallMsg{From: owner, To: &addr, Data: data}); err != nil {
+		if isRevert(err) {
+			return false, nil // definitive: the entry would revert
+		}
+		return false, err // inconclusive — let the caller proceed
+	}
+	return true, nil
+}
+
+// isRevert reports whether an eth_call error is an on-chain revert (as opposed to
+// a transport/rate-limit error). geth and the zkSync/Abstract nodes both surface a
+// revert with an "execution reverted" style message; rate-limit errors are already
+// retried inside the client and never reach here as a revert.
+func isRevert(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "revert")
+}
 
 // ActiveSeason returns the current season id (seasonCount-1), cached for
 // seasonCacheTTL — seasons roll over rarely, so the fast fleet poll shouldn't

@@ -32,7 +32,7 @@ func NewPvPRaider(manhattan, amsterdam uint8, isAlly func(uint64) bool, payBail 
 	s := &PvPRaider{IsAlly: isAlly, sold: newOncePerDay(), pve: pve}
 	s.run = &stepRunner{
 		recipe: recipe, isAlly: isAlly, payBail: payBail, primary: classPVP,
-		tried: newOncePerDay(), heistRuns: newDailyLimiter(), core: s.raidCore,
+		tried: newOncePerDay(), heistCk: newDailyLimiter(), heistRuns: newDailyLimiter(), core: s.raidCore,
 	}
 	return s
 }

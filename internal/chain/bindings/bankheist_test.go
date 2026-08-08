@@ -2,8 +2,38 @@ package bindings
 
 import (
 	"encoding/hex"
+	"errors"
 	"testing"
 )
+
+// TestIsRevert separates on-chain reverts (skip the enter) from transport/
+// rate-limit errors (inconclusive → attempt anyway), the discriminator
+// CanEnterSeason relies on to never wrongly block a real check-in.
+func TestIsRevert(t *testing.T) {
+	reverts := []string{
+		"execution reverted",
+		"execution reverted: InsufficientCash",
+		"VM Exception while processing transaction: revert",
+	}
+	for _, s := range reverts {
+		if !isRevert(errors.New(s)) {
+			t.Errorf("isRevert(%q) = false, want true", s)
+		}
+	}
+	notReverts := []string{
+		"429 Too Many Requests",
+		"context deadline exceeded",
+		"dial tcp: connection refused",
+	}
+	for _, s := range notReverts {
+		if isRevert(errors.New(s)) {
+			t.Errorf("isRevert(%q) = true, want false", s)
+		}
+	}
+	if isRevert(nil) {
+		t.Error("isRevert(nil) = true, want false")
+	}
+}
 
 // TestPackCheckInMatchesOnChain pins PackCheckIn to the real mainnet check-in
 // transaction (abscan 0x5f2884…d641873): checkIn(24) with selector 0xe95a644f.
@@ -45,7 +75,7 @@ func TestCheckedInTodayDayMath(t *testing.T) {
 		now  int64
 		want int64
 	}{
-		{day * secondsPerDay, day},                 // 00:00:00 of the day
+		{day * secondsPerDay, day},                   // 00:00:00 of the day
 		{day*secondsPerDay + secondsPerDay - 1, day}, // 23:59:59 same day
 		{(day + 1) * secondsPerDay, day + 1},         // next midnight rolls over
 	}

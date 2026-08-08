@@ -104,7 +104,7 @@ type pveMeta struct {
 	Choice bindings.Choice     `json:"choice"`
 	Hustle bindings.HustleType `json:"hustle"`
 	DrugID uint64              `json:"drug_id"`
-	Amount uint64             `json:"amount"`
+	Amount uint64              `json:"amount"`
 }
 
 // SubmitPVE commits a PVE hustle (buy/sell) for a dealer and persists the
@@ -741,6 +741,16 @@ func (m *Manager) CheckIn(ctx context.Context, tokenID uint64) error {
 	if m.reader != nil {
 		if season, err := m.reader.ActiveSeason(ctx); err == nil {
 			if joined, err := m.reader.Entered(ctx, season, tokenID); err == nil && !joined {
+				// Preflight the entry so we don't burn gas on a guaranteed revert —
+				// almost always a dealer too poor to pay the one-time $CASH season
+				// fee. Only a DEFINITIVE simulated revert (can, err := …; err==nil &&
+				// !can) skips; an inconclusive read (err!=nil) falls through and
+				// attempts as before, so an RPC hiccup never blocks a real check-in.
+				if m.sender != nil {
+					if can, perr := m.reader.CanEnterSeason(ctx, m.sender.AGW(), tokenID); perr == nil && !can {
+						return fmt.Errorf("skip check-in: dealer %d can't afford the $CASH season entry fee", tokenID)
+					}
+				}
 				data, err := bindings.PackEnter(tokenID)
 				if err != nil {
 					return fmt.Errorf("pack enter: %w", err)

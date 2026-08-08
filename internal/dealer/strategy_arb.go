@@ -38,7 +38,7 @@ func NewPvEArbitrage(manhattan, amsterdam uint8, isAlly func(uint64) bool, payBa
 	s := &PvEArbitrage{Manhattan: manhattan, Amsterdam: amsterdam, isAlly: isAlly, payBail: payBail, spMu: newStakeParamCache()}
 	s.run = &stepRunner{
 		recipe: recipe, isAlly: isAlly, payBail: payBail, primary: classPVE,
-		tried: newOncePerDay(), heistRuns: newDailyLimiter(), core: s.tradeCore,
+		tried: newOncePerDay(), heistCk: newDailyLimiter(), heistRuns: newDailyLimiter(), core: s.tradeCore,
 	}
 	return s
 }

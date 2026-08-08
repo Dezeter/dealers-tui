@@ -53,6 +53,7 @@ type stepRunner struct {
 	payBail   func() bool
 	primary   metricClass // classPVE or classPVP — for follow_missions
 	tried     *oncePerDay
+	heistCk   *dailyLimiter // bounds bank-heist check-in retries (see heistCheckInStep)
 	heistRuns *dailyLimiter
 	core      stepFn
 }
@@ -82,7 +83,7 @@ func (sr *stepRunner) Next(ctx context.Context, r StrategyReader, d Decision) (A
 		var ok bool
 		switch id {
 		case StepHeistCheckIn:
-			a, ok = heistCheckInStep(ctx, r, tokenID)
+			a, ok = heistCheckInStep(ctx, r, tokenID, sr.heistCk)
 		case StepClearStars:
 			a, ok = posterFirst(st, tokenID, sr.tried)
 		case StepMissions:

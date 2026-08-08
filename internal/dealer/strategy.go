@@ -235,16 +235,32 @@ func posterFirst(st *bindings.FullDealerState, tokenID uint64, tried *oncePerDay
 
 func posterKey(tokenID uint64) string { return "poster:" + strconv.FormatUint(tokenID, 10) }
 
+// heistCheckInAttemptsPerDay bounds how many times the autopilot re-attempts the
+// bank-heist check-in per dealer per UTC day. A check-in that keeps failing — most
+// often a dealer too poor to pay the one-time season enter() $CASH fee — must not
+// spin on this first-in-line step every tick and starve the rest of the pipeline
+// (heat-clearing, missions, trading). A few tries ride out a transient RPC error;
+// after that the dealer yields and does everything else.
+const heistCheckInAttemptsPerDay = 3
+
 // heistCheckInStep is the very first autopilot action (once jail is handled): if
 // a bank-heist season is active and the dealer hasn't checked in today, do it —
 // auto-entering the season if needed. Runs before stars/missions/strategy so the
 // daily focus is never missed; a jailed dealer breaks out first and checks in on
-// the next tick after release. Best-effort — a read error just skips it.
-func heistCheckInStep(ctx context.Context, r StrategyReader, tokenID uint64) (Action, bool) {
-	if need, err := r.NeedsHeistCheckIn(ctx, tokenID); err == nil && need {
-		return Action{Kind: ActionHeistCheckIn}, true
+// the next tick after release. Attempts are capped per day (attempts, a
+// dailyLimiter) so a check-in that can't complete — e.g. the dealer can't afford
+// the season enter() fee — yields the pipeline instead of monopolising it; a
+// successful check-in flips CheckedInToday and the step stops firing on its own.
+// Best-effort — a read error just skips it.
+func heistCheckInStep(ctx context.Context, r StrategyReader, tokenID uint64, attempts *dailyLimiter) (Action, bool) {
+	need, err := r.NeedsHeistCheckIn(ctx, tokenID)
+	if err != nil || !need {
+		return Action{}, false
 	}
-	return Action{}, false
+	if attempts != nil && !attempts.take(tokenID, heistCheckInAttemptsPerDay) {
+		return Action{}, false // tried enough today — let stars/missions/core run
+	}
+	return Action{Kind: ActionHeistCheckIn}, true
 }
 
 // missionStep is the universal mission-following pre-step for the autopilot:
