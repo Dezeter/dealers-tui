@@ -46,7 +46,7 @@ func TestMaxHeistDifficulty(t *testing.T) {
 func TestHeistStartsAtMaxDifficulty(t *testing.T) {
 	r := &fakeReader{missions: []bindings.MissionStatus{weeklyHeistMission(bindings.MetricHeistStages, 0, 5)}}
 	d := Decision{Snap: Snapshot{TokenID: 1, State: richState(12000, 100000, 5)}}
-	a, ok := heistMissionStep(context.Background(), r, d, newDailyLimiter())
+	a, ok := heistMissionStep(context.Background(), r, d, int8(-1))
 	if !ok || a.Kind != ActionStartHeist || a.HeistDifficulty != 2 || a.HeistFamily != bindings.FamilyCash {
 		t.Fatalf("want start heist at max difficulty, got %+v ok=%v", a, ok)
 	}
@@ -60,13 +60,13 @@ func TestHeistCommitsUntilCashable(t *testing.T) {
 		heist:       &bindings.DailyHeist{Status: uint8(bindings.HeistRevealedWin), CurrentStage: 1},
 	}
 	d := Decision{Snap: Snapshot{TokenID: 1, State: richState(12000, 100000, 5)}}
-	a, ok := heistMissionStep(context.Background(), r, d, newDailyLimiter())
+	a, ok := heistMissionStep(context.Background(), r, d, int8(-1))
 	if !ok || a.Kind != ActionHeistStage || a.HeistID != 500 {
 		t.Fatalf("stage 1 (below cashable) → commit next stage, got %+v ok=%v", a, ok)
 	}
 	// Pre-stage → commit the first stage too.
 	r.heist = &bindings.DailyHeist{Status: uint8(bindings.HeistPreStage)}
-	a, ok = heistMissionStep(context.Background(), r, d, newDailyLimiter())
+	a, ok = heistMissionStep(context.Background(), r, d, int8(-1))
 	if !ok || a.Kind != ActionHeistStage {
 		t.Fatalf("pre-stage → commit stage, got %+v ok=%v", a, ok)
 	}
@@ -86,7 +86,7 @@ func TestHeistBanksAtCashableStage(t *testing.T) {
 			heist:       &bindings.DailyHeist{Status: uint8(bindings.HeistRevealedWin), CurrentStage: 2},
 		}
 		d := Decision{Snap: Snapshot{TokenID: 1, State: richState(12000, 100000, 5)}}
-		a, ok := heistMissionStep(context.Background(), r, d, newDailyLimiter())
+		a, ok := heistMissionStep(context.Background(), r, d, int8(-1))
 		if !ok || a.Kind != ActionHeistCashOut || a.HeistID != 500 {
 			t.Fatalf("done=%v: cashable stage → cash out, got %+v ok=%v", done, a, ok)
 		}
@@ -97,7 +97,7 @@ func TestHeistNoNewRunWhenMissionDone(t *testing.T) {
 	// Mission complete, no active heist → do NOT launch anymore.
 	r := &fakeReader{missions: []bindings.MissionStatus{weeklyHeistMission(bindings.MetricHeistRuns, 3, 3)}}
 	d := Decision{Snap: Snapshot{TokenID: 1, State: richState(12000, 100000, 5)}}
-	if _, ok := heistMissionStep(context.Background(), r, d, newDailyLimiter()); ok {
+	if _, ok := heistMissionStep(context.Background(), r, d, int8(-1)); ok {
 		t.Error("completed heist mission should not start new runs")
 	}
 }
@@ -109,35 +109,42 @@ func TestHeistSkippedWithoutHeistMission(t *testing.T) {
 		activeHeist: 999, // would be used if the step didn't short-circuit
 	}
 	d := Decision{Snap: Snapshot{TokenID: 1, State: richState(12000, 100000, 5)}}
-	if _, ok := heistMissionStep(context.Background(), r, d, newDailyLimiter()); ok {
+	if _, ok := heistMissionStep(context.Background(), r, d, int8(-1)); ok {
 		t.Error("no heist mission on the board → heist step must yield")
 	}
 }
 
 func TestHeistDailyRunCap(t *testing.T) {
-	// After heistRunsPerDay starts, the step yields so deals get the energy.
-	r := &fakeReader{missions: []bindings.MissionStatus{weeklyHeistMission(bindings.MetricHeistRuns, 0, 99)}}
-	d := Decision{Snap: Snapshot{TokenID: 1, State: richState(12000, 100000, 5)}}
-	limiter := newDailyLimiter()
+	// The per-day heist-run cap now lives in the stepRunner (counting ActionStartHeist
+	// emits), so drive it through the strategy: after heistRunsPerDay starts the heists
+	// step yields and the dealer trades instead.
+	r := &fakeReader{
+		gs:       &bindings.GameState{RepCap: 100, RepTieBonus: 1, TotalReputation: big.NewInt(0)},
+		sp:       &bindings.PVEStakeParams{RepStakeDivisor: 10, SlopeBps: 0, HeadroomBps: 10000},
+		missions: []bindings.MissionStatus{weeklyHeistMission(bindings.MetricHeistRuns, 0, 99)},
+	}
+	dec := Decision{Snap: Snapshot{TokenID: 1, State: richState(12000, 100000, 5)}, Area: weedMarket(100, 90)}
+	s := NewPvEArbitrage(manhattan, amsterdam, nil, nil, nil)
 	for i := 0; i < heistRunsPerDay; i++ {
-		if _, ok := heistMissionStep(context.Background(), r, d, limiter); !ok {
-			t.Fatalf("start %d should be allowed (under cap)", i+1)
+		if a, ok := s.Next(context.Background(), r, dec); !ok || a.Kind != ActionStartHeist {
+			t.Fatalf("start %d should be a heist (under cap), got %+v ok=%v", i+1, a, ok)
 		}
 	}
-	if _, ok := heistMissionStep(context.Background(), r, d, limiter); ok {
-		t.Errorf("start beyond the daily cap should yield to the strategy")
+	// Beyond the cap → the heists step yields and the dealer trades.
+	if a, ok := s.Next(context.Background(), r, dec); !ok || a.Kind != ActionPVE {
+		t.Fatalf("beyond the daily heist cap → trade, got %+v ok=%v", a, ok)
 	}
-	// A different dealer is unaffected by another's cap.
-	d2 := Decision{Snap: Snapshot{TokenID: 2, State: richState(12000, 100000, 5)}}
-	if _, ok := heistMissionStep(context.Background(), r, d2, limiter); !ok {
-		t.Error("the cap is per-dealer, not global")
+	// A different dealer has its own budget.
+	dec2 := Decision{Snap: Snapshot{TokenID: 2, State: richState(12000, 100000, 5)}, Area: weedMarket(100, 90)}
+	if a, ok := s.Next(context.Background(), r, dec2); !ok || a.Kind != ActionStartHeist {
+		t.Fatalf("cap is per-dealer, got %+v ok=%v", a, ok)
 	}
 }
 
 func TestHeistNoStartWithoutEnergy(t *testing.T) {
 	r := &fakeReader{missions: []bindings.MissionStatus{weeklyHeistMission(bindings.MetricHeistRuns, 0, 3)}}
 	d := Decision{Snap: Snapshot{TokenID: 1, State: richState(12000, 100000, 0)}} // 0 attempts
-	if _, ok := heistMissionStep(context.Background(), r, d, newDailyLimiter()); ok {
+	if _, ok := heistMissionStep(context.Background(), r, d, int8(-1)); ok {
 		t.Error("no daily attempts → can't start a heist")
 	}
 }

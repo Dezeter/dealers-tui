@@ -15,6 +15,11 @@ import (
 type Step struct {
 	ID string `json:"id"`
 	On bool   `json:"on"`
+	// Max is the per-UTC-day cap on how many times this step may perform its
+	// primary action (a PvE deal, a PvP attack, a heist start, a poster attempt).
+	// 0 = the step's built-in default (unbounded for most, 3 for heists). Only the
+	// action-emitting steps honour it; plumbing (travel/check-in/claim) ignores it.
+	Max int `json:"max,omitempty"`
 }
 
 // Store is the ordered, toggleable step recipe, persisted to a JSON file.

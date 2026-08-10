@@ -12,9 +12,9 @@ import (
 // without spinning on a rep/cash revert. If the owner ever retunes these, a start
 // may revert (logged, harmless) — adjust here if so.
 var heistGates = [3]struct{ rep, cash int64 }{
-	{600, 600},     // difficulty 0
-	{1500, 4000},   // difficulty 1
-	{5500, 25000},  // difficulty 2 (max)
+	{600, 600},    // difficulty 0
+	{1500, 4000},  // difficulty 1
+	{5500, 25000}, // difficulty 2 (max)
 }
 
 // heistMinCashStage is the earliest stage a run can cash out (detail canCashOut).
@@ -33,7 +33,7 @@ const heistRunsPerDay = 3
 // bug.) Once the weekly heist mission is complete it launches no new runs, but
 // still banks any in-flight run. Only touches the heist reads when the board
 // actually has a heist mission.
-func heistMissionStep(ctx context.Context, r StrategyReader, d Decision, runs *dailyLimiter) (Action, bool) {
+func heistMissionStep(ctx context.Context, r StrategyReader, d Decision, difficulty int8) (Action, bool) {
 	st := d.Snap.State
 	ms, err := r.MissionStatus(ctx, d.Snap.TokenID)
 	if err != nil {
@@ -89,17 +89,44 @@ func heistMissionStep(ctx context.Context, r StrategyReader, d Decision, runs *d
 		}
 	}
 
-	// No active heist: start a new run only while the mission is unfinished, the
-	// dealer has an attempt to spend (a start costs one), and we're under today's
-	// heist-run cap. The cap keeps heists from eating all of a dealer's energy/
-	// $CASH (or spinning on a repeatedly-reverting start) and starving the deal
-	// missions the strategy serves — heists spread across days instead.
+	// No active heist: start a new run only while the mission is unfinished and the
+	// dealer has an attempt to spend (a start costs one). The per-day run cap is
+	// enforced by the stepRunner (recipe Max, default heistRunsPerDay) counting
+	// ActionStartHeist emits — so heists can't eat all of a dealer's energy/$CASH
+	// (or spin on a reverting start) and starve the deal missions the strategy
+	// serves; runs spread across days instead.
 	if incomplete && st != nil && st.DailyAttemptsRemaining > 0 {
-		if diff, ok := maxHeistDifficulty(st); ok && runs.take(d.Snap.TokenID, heistRunsPerDay) {
+		if diff, ok := heistDifficultyFor(st, difficulty); ok {
 			return Action{Kind: ActionStartHeist, HeistFamily: bindings.FamilyCash, HeistDifficulty: diff}, true
 		}
 	}
 	return Action{}, false
+}
+
+// heistDifficultyFor picks the run difficulty: a fixed 0..2 override when the
+// dealer meets that tier's rep gate and can afford its $CASH stake (else it does
+// NOT start — no silent downgrade), otherwise the highest affordable tier.
+func heistDifficultyFor(st *bindings.FullDealerState, override int8) (uint8, bool) {
+	if override >= 0 && int(override) < len(heistGates) {
+		d := uint8(override)
+		if canAffordHeist(st, d) {
+			return d, true
+		}
+		return 0, false
+	}
+	return maxHeistDifficulty(st)
+}
+
+// canAffordHeist reports whether the dealer meets tier d's rep gate and $CASH stake.
+func canAffordHeist(st *bindings.FullDealerState, d uint8) bool {
+	rep, cash := int64(0), int64(0)
+	if st.Reputation != nil {
+		rep = st.Reputation.Int64()
+	}
+	if st.CashBalance != nil {
+		cash = st.CashBalance.Int64()
+	}
+	return int(d) < len(heistGates) && rep >= heistGates[d].rep && cash >= heistGates[d].cash
 }
 
 func isHeistMetric(metric uint8) bool {
@@ -114,15 +141,8 @@ func isHeistMetric(metric uint8) bool {
 // reputation gate for and can afford the $CASH stake of, or ok=false if not even
 // the cheapest is feasible.
 func maxHeistDifficulty(st *bindings.FullDealerState) (uint8, bool) {
-	rep, cash := int64(0), int64(0)
-	if st.Reputation != nil {
-		rep = st.Reputation.Int64()
-	}
-	if st.CashBalance != nil {
-		cash = st.CashBalance.Int64()
-	}
 	for d := len(heistGates) - 1; d >= 0; d-- {
-		if rep >= heistGates[d].rep && cash >= heistGates[d].cash {
+		if canAffordHeist(st, uint8(d)) {
 			return uint8(d), true
 		}
 	}

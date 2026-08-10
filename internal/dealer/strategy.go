@@ -2,7 +2,6 @@ package dealer
 
 import (
 	"context"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -14,20 +13,20 @@ import (
 type ActionKind int
 
 const (
-	ActionNone      ActionKind = iota
-	ActionPVE                  // buy/sell hustle (commit-reveal)
-	ActionClearHeat            // wanted poster (ETH-free heat clear, commit-reveal)
-	ActionTravel               // move to Action.DestArea (single-tx)
-	ActionPVP                  // attack Action.DefenderID (commit-reveal)
-	ActionSellDrop             // black-market sell Action.DrugID × Action.Amount (single-tx)
-	ActionBreakout             // free jail-break attempt (commit-reveal)
-	ActionPayBail              // pay ETH bail to leave jail (opt-in; single-tx)
-	ActionMissionCheckIn       // snapshot mission baseline for the epoch (single-tx)
-	ActionMissionClaim         // claim mission reward Action.TemplateID (single-tx)
-	ActionHeistCheckIn         // bank-heist season check-in (auto-enters season; single-tx)
-	ActionStartHeist           // start a heist run (Action.HeistFamily/HeistDifficulty; single-tx)
-	ActionHeistStage           // commit the next heist stage of Action.HeistID (commit-reveal)
-	ActionHeistCashOut         // bank an active heist Action.HeistID (single-tx)
+	ActionNone           ActionKind = iota
+	ActionPVE                       // buy/sell hustle (commit-reveal)
+	ActionClearHeat                 // wanted poster (ETH-free heat clear, commit-reveal)
+	ActionTravel                    // move to Action.DestArea (single-tx)
+	ActionPVP                       // attack Action.DefenderID (commit-reveal)
+	ActionSellDrop                  // black-market sell Action.DrugID × Action.Amount (single-tx)
+	ActionBreakout                  // free jail-break attempt (commit-reveal)
+	ActionPayBail                   // pay ETH bail to leave jail (opt-in; single-tx)
+	ActionMissionCheckIn            // snapshot mission baseline for the epoch (single-tx)
+	ActionMissionClaim              // claim mission reward Action.TemplateID (single-tx)
+	ActionHeistCheckIn              // bank-heist season check-in (auto-enters season; single-tx)
+	ActionStartHeist                // start a heist run (Action.HeistFamily/HeistDifficulty; single-tx)
+	ActionHeistStage                // commit the next heist stage of Action.HeistID (commit-reveal)
+	ActionHeistCashOut              // bank an active heist Action.HeistID (single-tx)
 )
 
 // Action is a concrete instruction the Manager can Execute.
@@ -40,9 +39,9 @@ type Action struct {
 	DefenderID uint64 // ActionPVP target token id
 	TemplateID uint64 // ActionMissionClaim mission template id
 
-	HeistID         uint64              // ActionHeistStage / ActionHeistCashOut
+	HeistID         uint64               // ActionHeistStage / ActionHeistCashOut
 	HeistFamily     bindings.HeistFamily // ActionStartHeist
-	HeistDifficulty uint8               // ActionStartHeist
+	HeistDifficulty uint8                // ActionStartHeist
 }
 
 // Decision is the context a Strategy sees for one dealer on an autopilot tick.
@@ -222,18 +221,53 @@ func (l *dailyLimiter) take(tokenID uint64, cap int) bool {
 	return true
 }
 
-// posterFirst returns the one-shot heat-clear action if the dealer is at/above
-// the 3-star threshold and hasn't already tried today. Regardless of the roll's
-// outcome it won't fire again the same day, so the strategy proceeds either way.
-func posterFirst(st *bindings.FullDealerState, tokenID uint64, tried *oncePerDay) (Action, bool) {
-	if st.HeatLevel >= PosterHeatThreshold && st.DailyAttemptsRemaining > 0 &&
-		tried.try(posterKey(tokenID), utcDay()) {
+// posterFirst returns the free heat-clear action while the dealer is at/above the
+// 3-star threshold and has an attempt to spend. It retries until the heat is
+// actually cleared (each poster costs a daily attempt, so it can't loop forever)
+// — the step's per-day cap (recipe Max) bounds it further if the template sets
+// one. Between attempts the commit-reveal round makes the dealer skip ticks, so
+// the retries are naturally spaced.
+func posterFirst(st *bindings.FullDealerState) (Action, bool) {
+	if st.HeatLevel >= PosterHeatThreshold && st.DailyAttemptsRemaining > 0 {
 		return Action{Kind: ActionClearHeat}, true
 	}
 	return Action{}, false
 }
 
-func posterKey(tokenID uint64) string { return "poster:" + strconv.FormatUint(tokenID, 10) }
+// primaryActionKind maps a strategy's primary class to the game action that
+// advances it — used to count the core step against its per-day cap by the RIGHT
+// action (a pvp core's attacks, not its no-target fallback trades).
+func primaryActionKind(p metricClass) ActionKind {
+	if p == classPVP {
+		return ActionPVP
+	}
+	return ActionPVE
+}
+
+// dayCounter caps arbitrary string-keyed events per UTC day (per-step action
+// budgets). Like dailyLimiter but keyed by string so one counter serves every
+// (step, dealer) pair. Resets each day.
+type dayCounter struct {
+	mu  sync.Mutex
+	day int64
+	n   map[string]int
+}
+
+func newDayCounter() *dayCounter { return &dayCounter{n: map[string]int{}} }
+
+// take reports whether key is under cap today and, if so, counts one use.
+func (c *dayCounter) take(key string, cap int) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if today := utcDay(); today != c.day {
+		c.day, c.n = today, map[string]int{}
+	}
+	if c.n[key] >= cap {
+		return false
+	}
+	c.n[key]++
+	return true
+}
 
 // heistCheckInAttemptsPerDay bounds how many times the autopilot re-attempts the
 // bank-heist check-in per dealer per UTC day. A check-in that keeps failing — most

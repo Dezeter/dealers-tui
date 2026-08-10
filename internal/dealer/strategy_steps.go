@@ -1,6 +1,9 @@
 package dealer
 
-import "context"
+import (
+	"context"
+	"strconv"
+)
 
 // Autopilot step ids. A recipe is an ordered list of these; the pipeline runs the
 // enabled ones in order and the first to act wins the tick. "core" resolves to the
@@ -46,15 +49,21 @@ type stepFn func(ctx context.Context, r StrategyReader, d Decision) (Action, boo
 
 // stepRunner drives the configurable pipeline: jail handling and the actionable
 // gate are fixed (never user-removable), then the recipe's ordered enabled steps
-// run in turn. The concrete strategy supplies the core (trade or raid).
+// run in turn. The concrete strategy supplies the core (trade or raid). A template
+// tunes it via recipe (step order), stepMax (per-step daily action caps), the
+// heist difficulty override, and the mission-steering priority.
 type stepRunner struct {
-	recipe    func() []string // ordered enabled step ids (live; nil/empty = default)
-	isAlly    func(uint64) bool
-	payBail   func() bool
-	primary   metricClass // classPVE or classPVP — for follow_missions
-	tried     *oncePerDay
+	recipe  func() []string         // ordered enabled step ids (live; nil/empty = default)
+	stepMax func(stepID string) int // per-step daily action cap (live; nil = defaults)
+	isAlly  func(uint64) bool
+	payBail func() bool
+	primary metricClass // classPVE or classPVP — core kind + follow_missions
+
+	heistDifficulty int8   // -1 = max affordable; 0..2 = fixed tier
+	missionPriority string // "" / "daily" = daily-first; "weekly" = weekly-first
+
 	heistCk   *dailyLimiter // bounds bank-heist check-in retries (see heistCheckInStep)
-	heistRuns *dailyLimiter
+	stepCount *dayCounter   // per-step daily action budgets (recipe Max)
 	core      stepFn
 }
 
@@ -85,19 +94,72 @@ func (sr *stepRunner) Next(ctx context.Context, r StrategyReader, d Decision) (A
 		case StepHeistCheckIn:
 			a, ok = heistCheckInStep(ctx, r, tokenID, sr.heistCk)
 		case StepClearStars:
-			a, ok = posterFirst(st, tokenID, sr.tried)
+			a, ok = posterFirst(st)
 		case StepMissions:
 			a, ok = missionStep(ctx, r, tokenID)
 		case StepFollowMissions:
-			a, ok = missionSteer(ctx, r, d, sr.primary, sr.isAlly)
+			a, ok = missionSteer(ctx, r, d, sr.primary, sr.isAlly, sr.missionPriority)
 		case StepHeists:
-			a, ok = heistMissionStep(ctx, r, d, sr.heistRuns)
+			a, ok = heistMissionStep(ctx, r, d, sr.heistDifficulty)
 		case StepCore:
 			a, ok = sr.core(ctx, r, d)
 		}
-		if ok {
-			return a, true
+		if !ok {
+			continue
 		}
+		if !sr.underCap(id, tokenID, a.Kind) {
+			continue // this step spent its daily action budget → let the next step run
+		}
+		return a, true
 	}
 	return Action{}, false
+}
+
+// underCap enforces a step's per-day action budget: plumbing actions (travel,
+// check-in, claim, sell-drop) are never capped, only the step's primary action
+// (a deal/attack/heist-start/poster). Counting happens on emit — and because a
+// commit-reveal action makes the dealer skip ticks until it resolves, one emit ≈
+// one completed action.
+func (sr *stepRunner) underCap(stepID string, tokenID uint64, k ActionKind) bool {
+	if !countsForCap(sr.primary, stepID, k) {
+		return true
+	}
+	cap := sr.capFor(stepID)
+	if cap <= 0 || sr.stepCount == nil {
+		return true // unbounded
+	}
+	return sr.stepCount.take(stepKey(stepID, tokenID), cap)
+}
+
+// capFor returns the effective per-day cap for a step: the template override if
+// set (>0), else the step's built-in default (heists 3, everything else 0 =
+// unbounded).
+func (sr *stepRunner) capFor(stepID string) int {
+	if sr.stepMax != nil {
+		if m := sr.stepMax(stepID); m > 0 {
+			return m
+		}
+	}
+	if stepID == StepHeists {
+		return heistRunsPerDay
+	}
+	return 0
+}
+
+// countsForCap reports whether an emitted action counts against a step's budget.
+// For the core step only its primary action counts (a pvp core's attacks, not its
+// no-target fallback trades); for other steps every game action counts.
+func countsForCap(primary metricClass, stepID string, k ActionKind) bool {
+	if stepID == StepCore {
+		return k == primaryActionKind(primary)
+	}
+	switch k {
+	case ActionPVE, ActionPVP, ActionStartHeist, ActionClearHeat:
+		return true
+	}
+	return false
+}
+
+func stepKey(stepID string, tokenID uint64) string {
+	return stepID + ":" + strconv.FormatUint(tokenID, 10)
 }

@@ -16,13 +16,31 @@ const weedName = "weed"
 // bank), since the per-hustle cap is itself the rep-based stake limit.
 const stockpileMultiple = 3
 
-// PvEArbitrage runs the weed run: stockpile weed on Manhattan (up to ×3 the
-// per-hustle stake cap), haul to Amsterdam and sell in max-size lots, and when
-// holdings run dry head back to restock. Out of energy it parks in the Black
-// Market. It runs as the "core" step of a configurable pipeline (stepRunner).
+// StrategyConfig configures a strategy instance from a template's Params + recipe
+// (wired by main). Zero values fall back to strategy defaults, so a neutral config
+// reproduces the classic weed Manhattan→Amsterdam run.
+type StrategyConfig struct {
+	BuyArea  uint8  // buy zone (default Manhattan)
+	SellArea uint8  // sell zone (default Amsterdam)
+	Drug     string // drug to trade ("" = weed)
+
+	IsAlly  func(uint64) bool       // do-not-attack set (mission-driven PvP steering)
+	PayBail func() bool             // live auto-bail setting (may be nil)
+	Recipe  func() []string         // live ordered enabled step ids (nil → default)
+	StepMax func(stepID string) int // live per-step daily action cap (nil → defaults)
+
+	HeistDifficulty int8   // -1 = max affordable; 0..2 = fixed tier
+	MissionPriority string // "" / "daily" = daily-first; "weekly" = weekly-first
+}
+
+// PvEArbitrage runs the drug run: stockpile the traded drug in the buy zone (up to
+// ×3 the per-hustle stake cap), haul to the sell zone and sell in max-size lots,
+// and when holdings run dry head back to restock. Out of energy it parks in the
+// Black Market. It runs as the "core" step of a configurable pipeline (stepRunner).
 type PvEArbitrage struct {
-	Manhattan uint8 // buy area
-	Amsterdam uint8 // sell area
+	Manhattan uint8  // buy area
+	Amsterdam uint8  // sell area
+	drug      string // drug name traded (default "weed")
 
 	isAlly  func(uint64) bool // do-not-attack set, for mission-driven PvP steering
 	payBail func() bool       // live "pay bail after a failed breakout" setting (may be nil)
@@ -31,14 +49,26 @@ type PvEArbitrage struct {
 	run     *stepRunner
 }
 
-// NewPvEArbitrage builds the strategy for the given buy/sell areas. isAlly (nil ok)
-// is used when a mission forces a PvP action; payBail (nil ok) is read live for the
-// auto-bail setting; recipe (nil ok → default) is the live ordered step list.
+// NewPvEArbitrage builds the classic weed run with default params — the
+// compatibility constructor. New callers use NewPvEArbitrageCfg.
 func NewPvEArbitrage(manhattan, amsterdam uint8, isAlly func(uint64) bool, payBail func() bool, recipe func() []string) *PvEArbitrage {
-	s := &PvEArbitrage{Manhattan: manhattan, Amsterdam: amsterdam, isAlly: isAlly, payBail: payBail, spMu: newStakeParamCache()}
+	return NewPvEArbitrageCfg(StrategyConfig{
+		BuyArea: manhattan, SellArea: amsterdam,
+		IsAlly: isAlly, PayBail: payBail, Recipe: recipe, HeistDifficulty: -1,
+	})
+}
+
+// NewPvEArbitrageCfg builds the trade strategy from a template config.
+func NewPvEArbitrageCfg(cfg StrategyConfig) *PvEArbitrage {
+	drug := cfg.Drug
+	if drug == "" {
+		drug = weedName
+	}
+	s := &PvEArbitrage{Manhattan: cfg.BuyArea, Amsterdam: cfg.SellArea, drug: drug, isAlly: cfg.IsAlly, payBail: cfg.PayBail, spMu: newStakeParamCache()}
 	s.run = &stepRunner{
-		recipe: recipe, isAlly: isAlly, payBail: payBail, primary: classPVE,
-		tried: newOncePerDay(), heistCk: newDailyLimiter(), heistRuns: newDailyLimiter(), core: s.tradeCore,
+		recipe: cfg.Recipe, stepMax: cfg.StepMax, isAlly: cfg.IsAlly, payBail: cfg.PayBail, primary: classPVE,
+		heistDifficulty: cfg.HeistDifficulty, missionPriority: cfg.MissionPriority,
+		heistCk: newDailyLimiter(), stepCount: newDayCounter(), core: s.tradeCore,
 	}
 	return s
 }
@@ -61,7 +91,7 @@ func (s *PvEArbitrage) tradeCore(ctx context.Context, r StrategyReader, d Decisi
 		return Action{}, false
 	}
 
-	holdings := drugHoldings(st.DrugBalances, weedName)
+	holdings := drugHoldings(st.DrugBalances, s.drug)
 
 	switch st.CurrentArea {
 	case s.Manhattan:
@@ -76,7 +106,7 @@ func (s *PvEArbitrage) tradeCore(ctx context.Context, r StrategyReader, d Decisi
 
 // onManhattan buys weed toward the stockpile target, else hauls to Amsterdam.
 func (s *PvEArbitrage) onManhattan(ctx context.Context, r StrategyReader, st *bindings.FullDealerState, tokenID uint64, market []bindings.AreaDrug, holdings uint64) (Action, bool) {
-	weed, ok := findDrug(market, weedName)
+	weed, ok := findDrug(market, s.drug)
 	if !ok || weed.BuyPrice == nil || weed.BuyPrice.Sign() <= 0 {
 		// No weed to buy here — if we're already holding, go sell; else idle.
 		if holdings > 0 {
@@ -112,7 +142,7 @@ func (s *PvEArbitrage) onAmsterdam(ctx context.Context, r StrategyReader, st *bi
 	if holdings == 0 {
 		return Action{Kind: ActionTravel, DestArea: s.Manhattan}, true
 	}
-	weed, ok := findDrug(market, weedName)
+	weed, ok := findDrug(market, s.drug)
 	if !ok || weed.SellPrice == nil || weed.SellPrice.Sign() <= 0 {
 		// Can't sell here after all — go back rather than sit on inventory.
 		return Action{Kind: ActionTravel, DestArea: s.Manhattan}, true

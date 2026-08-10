@@ -33,6 +33,7 @@ import (
 	"dealers/internal/recipe"
 	"dealers/internal/settings"
 	"dealers/internal/store"
+	"dealers/internal/template"
 	"dealers/internal/tui"
 	"dealers/internal/update"
 	"dealers/internal/wallet"
@@ -256,7 +257,8 @@ func runFleet(args []string) error {
 		defer st.Close()
 
 		payBail := func() bool { return deps.Settings.Get(settings.KeyPayBail) }
-		strategy, stratStore := buildStrategies(b.cfg, ids, deps.AreaNames, deps.Allies.IsAlly, payBail, deps.Recipe.Enabled)
+		tmpls := template.Load("templates.json")
+		strategy, stratStore := buildStrategies(b.cfg, deps.AreaNames, deps.Allies.IsAlly, payBail, tmpls, deps.Recipe.Enabled)
 		deps.Strategies = stratStore
 		eng := engine.New(b.cl, st, sender, ids, strategy, fileLogger())
 		eng.Manager().SetDrugNames(drugNames)
@@ -277,53 +279,82 @@ func runFleet(args []string) error {
 	return err
 }
 
-// buildStrategy resolves the configured autopilot policy into a concrete
-// Strategy. The pve/pvp policies need the Manhattan/Amsterdam area ids (resolved
-// by name from the area cache); if either can't be found it falls back to a
-// no-op ManualStrategy rather than risk auto-travelling to a bogus area. Returns
-// the strategy and a short display name for the UI.
-func buildStrategy(name string, areaNames map[uint8]string, isAlly func(uint64) bool, payBail func() bool, recipe func() []string) (dealer.Strategy, string) {
-	switch name {
-	case "manual":
-		return dealer.ManualStrategy{}, "manual"
-	case "pve", "pvp":
-		man, okM := findAreaID(areaNames, "manhattan")
-		ams, okA := findAreaID(areaNames, "amsterdam")
-		if !okM || !okA {
-			fmt.Printf("engine:   WARNING strategy %q needs Manhattan+Amsterdam areas (found manhattan=%v amsterdam=%v) — autopilot disabled\n", name, okM, okA)
-			return dealer.ManualStrategy{}, "manual"
-		}
-		if name == "pve" {
-			fmt.Printf("engine:   strategy pve: buy@%s(%d) sell@%s(%d)\n", areaNames[man], man, areaNames[ams], ams)
-			return dealer.NewPvEArbitrage(man, ams, isAlly, payBail, recipe), "pve"
-		}
-		fmt.Printf("engine:   strategy pvp: raid, PvE-fallback over %s(%d)/%s(%d)\n", areaNames[man], man, areaNames[ams], ams)
-		return dealer.NewPvPRaider(man, ams, isAlly, payBail, recipe), "pvp"
-	default: // unexpected value → no-op
-		return dealer.ManualStrategy{}, "manual"
+// buildStrategyFromTemplate turns a named template into a concrete Strategy. The
+// pve/pvp strategies need buy/sell area ids (resolved by name from the area cache,
+// defaulting to Manhattan/Amsterdam); if either can't be found it falls back to a
+// no-op ManualStrategy rather than risk auto-travelling to a bogus area. The
+// recipe + per-step caps are read LIVE from the template store by name, so a later
+// in-UI edit applies on the next tick with no restart.
+func buildStrategyFromTemplate(t template.Template, areaNames map[uint8]string, isAlly func(uint64) bool, payBail func() bool, ts *template.Store, globalRecipe func() []string) dealer.Strategy {
+	if t.Strategy == "manual" {
+		return dealer.ManualStrategy{}
 	}
+	buy, okB := resolveAreaOr(areaNames, t.Params.BuyArea, "manhattan")
+	sell, okS := resolveAreaOr(areaNames, t.Params.SellArea, "amsterdam")
+	if !okB || !okS {
+		fmt.Printf("engine:   WARNING template %q needs buy+sell areas (buy=%q ok=%v · sell=%q ok=%v) — treated as manual\n",
+			t.Name, t.Params.BuyArea, okB, t.Params.SellArea, okS)
+		return dealer.ManualStrategy{}
+	}
+	name := t.Name
+	cfg := dealer.StrategyConfig{
+		BuyArea: buy, SellArea: sell, Drug: t.Params.Drug,
+		IsAlly: isAlly, PayBail: payBail,
+		Recipe:          func() []string { return ts.EnabledSteps(name, globalRecipe) },
+		StepMax:         func(id string) int { return ts.StepMax(name, id) },
+		HeistDifficulty: int8(clampDiff(t.Params.HeistDifficulty)),
+		MissionPriority: t.Params.MissionPriority,
+	}
+	fmt.Printf("engine:   template %q (%s): buy@%s sell@%s drug=%s heist=%d\n",
+		name, t.Strategy, areaNames[buy], areaNames[sell], cfg.Drug, cfg.HeistDifficulty)
+	if t.Strategy == "pvp" {
+		return dealer.NewPvPRaiderCfg(cfg)
+	}
+	return dealer.NewPvEArbitrageCfg(cfg)
 }
 
-// buildStrategies builds one instance per policy tag (pve/pvp fall back to manual
-// if the Manhattan/Amsterdam areas can't be resolved) and returns a MultiStrategy
-// that resolves each dealer's policy LIVE from the autostrat store — so an in-UI
-// change takes effect on the next autopilot tick. The store is seeded from the
-// config (default + dealer_strategies) and persisted to strategies.json; the UI
-// writes it, so config.json never needs hand-editing.
-func buildStrategies(cfg *config.Config, ids []uint64, areaNames map[uint8]string, isAlly func(uint64) bool, payBail func() bool, recipe func() []string) (dealer.Strategy, *autostrat.Store) {
+// buildStrategies builds one instance per template and returns a MultiStrategy
+// that resolves each dealer's assigned template LIVE from the autostrat store — so
+// an in-UI reassignment (s) takes effect on the next tick. autostrat's selector
+// order is set to the template names, and its assignments (strategies.json) now
+// hold template names; the seeded pve/pvp/manual templates match the old tags, so
+// existing assignments keep working.
+func buildStrategies(cfg *config.Config, areaNames map[uint8]string, isAlly func(uint64) bool, payBail func() bool, ts *template.Store, globalRecipe func() []string) (dealer.Strategy, *autostrat.Store) {
 	inst := map[string]dealer.Strategy{}
-	for _, tag := range autostrat.Order {
-		s, _ := buildStrategy(tag, areaNames, isAlly, payBail, recipe)
-		inst[tag] = s
+	for _, t := range ts.All() {
+		inst[t.Name] = buildStrategyFromTemplate(t, areaNames, isAlly, payBail, ts, globalRecipe)
 	}
+	autostrat.Order = ts.Names() // the fleet 's' selector cycles the template names
 	store := autostrat.Load("strategies.json", cfg.AutopilotStrategy, cfg.DealerStrategies)
 	resolve := func(id uint64) dealer.Strategy {
 		if s := inst[store.Get(id)]; s != nil {
 			return s
 		}
-		return inst[store.Default()]
+		if s := inst[store.Default()]; s != nil {
+			return s
+		}
+		return dealer.ManualStrategy{}
 	}
 	return dealer.MultiStrategy{Resolve: resolve}, store
+}
+
+// resolveAreaOr resolves a template's area name (or a default when unset) to an id.
+func resolveAreaOr(names map[uint8]string, want, def string) (uint8, bool) {
+	if want != "" {
+		return findAreaID(names, want)
+	}
+	return findAreaID(names, def)
+}
+
+// clampDiff bounds a template's heist difficulty to [-1, 2] (-1 = max affordable).
+func clampDiff(d int) int {
+	if d < -1 {
+		return -1
+	}
+	if d > 2 {
+		return 2
+	}
+	return d
 }
 
 // strategySummary returns the single shared tag, or "mixed" when dealers run

@@ -23,16 +23,27 @@ type PvPRaider struct {
 	run  *stepRunner
 }
 
-// NewPvPRaider builds the raider over the two free zones. isAlly may be nil.
+// NewPvPRaider builds the raider over the two free zones with default params —
+// the compatibility constructor. New callers use NewPvPRaiderCfg.
 func NewPvPRaider(manhattan, amsterdam uint8, isAlly func(uint64) bool, payBail func() bool, recipe func() []string) *PvPRaider {
-	if isAlly == nil {
-		isAlly = func(uint64) bool { return false }
+	return NewPvPRaiderCfg(StrategyConfig{
+		BuyArea: manhattan, SellArea: amsterdam,
+		IsAlly: isAlly, PayBail: payBail, Recipe: recipe, HeistDifficulty: -1,
+	})
+}
+
+// NewPvPRaiderCfg builds the raider from a template config. Its no-target fallback
+// trade run inherits the same buy/sell/drug params.
+func NewPvPRaiderCfg(cfg StrategyConfig) *PvPRaider {
+	if cfg.IsAlly == nil {
+		cfg.IsAlly = func(uint64) bool { return false }
 	}
-	pve := NewPvEArbitrage(manhattan, amsterdam, isAlly, payBail, recipe)
-	s := &PvPRaider{IsAlly: isAlly, sold: newOncePerDay(), pve: pve}
+	pve := NewPvEArbitrageCfg(cfg)
+	s := &PvPRaider{IsAlly: cfg.IsAlly, sold: newOncePerDay(), pve: pve}
 	s.run = &stepRunner{
-		recipe: recipe, isAlly: isAlly, payBail: payBail, primary: classPVP,
-		tried: newOncePerDay(), heistCk: newDailyLimiter(), heistRuns: newDailyLimiter(), core: s.raidCore,
+		recipe: cfg.Recipe, stepMax: cfg.StepMax, isAlly: cfg.IsAlly, payBail: cfg.PayBail, primary: classPVP,
+		heistDifficulty: cfg.HeistDifficulty, missionPriority: cfg.MissionPriority,
+		heistCk: newDailyLimiter(), stepCount: newDayCounter(), core: s.raidCore,
 	}
 	return s
 }

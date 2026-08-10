@@ -40,7 +40,7 @@ func classifyMetric(metric uint8) metricClass {
 // left to it, and a completed mission stops steering. Returns no action when
 // nothing needs steering or the off-strategy action isn't possible right now
 // (afford/target/black-market), so the caller falls through to normal behaviour.
-func missionSteer(ctx context.Context, r StrategyReader, d Decision, primary metricClass, isAlly func(uint64) bool) (Action, bool) {
+func missionSteer(ctx context.Context, r StrategyReader, d Decision, primary metricClass, isAlly func(uint64) bool, priority string) (Action, bool) {
 	st := d.Snap.State
 	if st == nil || st.DailyAttemptsRemaining == 0 {
 		return Action{}, false // PvE/PvP games cost a daily attempt
@@ -49,8 +49,13 @@ func missionSteer(ctx context.Context, r StrategyReader, d Decision, primary met
 	if err != nil {
 		return Action{}, false
 	}
-	// Daily takes priority over weekly (and both over the strategy).
-	for _, cadence := range []uint8{bindings.CadenceDaily, bindings.CadenceWeekly} {
+	// Steer in the template's cadence priority (default daily-first); both cadences
+	// still take priority over the strategy.
+	order := []uint8{bindings.CadenceDaily, bindings.CadenceWeekly}
+	if priority == "weekly" {
+		order = []uint8{bindings.CadenceWeekly, bindings.CadenceDaily}
+	}
+	for _, cadence := range order {
 		if a, ok := steerForCadence(ctx, r, d, primary, isAlly, ms, cadence); ok {
 			return a, true
 		}

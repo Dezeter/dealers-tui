@@ -10,8 +10,8 @@ import (
 
 // fakeReader is a scripted StrategyReader for strategy tests.
 type fakeReader struct {
-	gs       *bindings.GameState
-	sp       *bindings.PVEStakeParams
+	gs               *bindings.GameState
+	sp               *bindings.PVEStakeParams
 	targets          []bindings.PVPTarget
 	missions         []bindings.MissionStatus
 	needHeistCheckIn bool
@@ -131,7 +131,7 @@ func TestPvERetreatsToBlackMarketOutOfEnergy(t *testing.T) {
 	}
 }
 
-func TestPvEPosterFirstOncePerDay(t *testing.T) {
+func TestPvEPosterRetriesUntilCleared(t *testing.T) {
 	s := NewPvEArbitrage(manhattan, amsterdam, nil, nil, nil)
 	st := pveState(manhattan, 5, 100000, 0)
 	st.HeatLevel = 4
@@ -140,9 +140,15 @@ func TestPvEPosterFirstOncePerDay(t *testing.T) {
 	if !ok || a.Kind != ActionClearHeat {
 		t.Fatalf("first action at 4★ should clear heat, got %+v ok=%v", a, ok)
 	}
-	// Same day, heat still high → does NOT clear again, proceeds to buy.
+	// Still hot → keeps clearing (retry until success, no longer once-per-day).
 	a2, ok := s.Next(context.Background(), stakeReader(), dec)
-	if !ok || a2.Kind != ActionPVE {
-		t.Fatalf("second call should proceed to buy, got %+v ok=%v", a2, ok)
+	if !ok || a2.Kind != ActionClearHeat {
+		t.Fatalf("still hot → keeps clearing, got %+v ok=%v", a2, ok)
+	}
+	// Heat cleared → proceeds to buy.
+	st.HeatLevel = 0
+	a3, ok := s.Next(context.Background(), stakeReader(), dec)
+	if !ok || a3.Kind != ActionPVE {
+		t.Fatalf("after heat cleared, should buy, got %+v ok=%v", a3, ok)
 	}
 }

@@ -78,7 +78,8 @@ func TestPvPPosterFirstThenActs(t *testing.T) {
 	if !ok || a.Kind != ActionClearHeat {
 		t.Fatalf("first action at 3★ should clear heat, got %+v ok=%v", a, ok)
 	}
-	// Same day → poster already tried → now attacks the target.
+	// Heat cleared → now attacks the target.
+	st.HeatLevel = 0
 	a2, ok := s.Next(context.Background(), r, dec)
 	if !ok || a2.Kind != ActionPVP || a2.DefenderID != 50 {
 		t.Fatalf("second call should attack #50, got %+v ok=%v", a2, ok)

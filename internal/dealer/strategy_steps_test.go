@@ -23,9 +23,9 @@ func TestDefaultStepOrderMatchesCatalog(t *testing.T) {
 func TestRecipeReordersCoreBeforeHeists(t *testing.T) {
 	// A pve dealer with an incomplete heist mission AND a stocked bank.
 	r := &fakeReader{
-		gs:          &bindings.GameState{RepCap: 100, RepTieBonus: 1, TotalReputation: big.NewInt(0)},
-		sp:          &bindings.PVEStakeParams{RepStakeDivisor: 10, SlopeBps: 0, HeadroomBps: 10000},
-		missions:    []bindings.MissionStatus{weeklyHeistMission(bindings.MetricHeistStages, 0, 5)},
+		gs:               &bindings.GameState{RepCap: 100, RepTieBonus: 1, TotalReputation: big.NewInt(0)},
+		sp:               &bindings.PVEStakeParams{RepStakeDivisor: 10, SlopeBps: 0, HeadroomBps: 10000},
+		missions:         []bindings.MissionStatus{weeklyHeistMission(bindings.MetricHeistStages, 0, 5)},
 		needHeistCheckIn: false,
 	}
 	st := richState(12000, 100000, 5) // rep clears the heist gate; on Manhattan, has energy
