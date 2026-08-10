@@ -209,11 +209,11 @@ func (m FleetModel) View() string {
 		statusLine += "  " + errStyle.Render("⚠ "+m.lastErr)
 	}
 
-	hint := "↑↓←→ · enter · n missions · c check-in · s strategy · e steps · m market · f allies · o settings · r refresh · q quit"
+	hint := "↑↓←→ · enter · n missions · c check-in · s strategy · t templates · e steps · m market · f allies · o settings · r · q"
 	if m.deps.Manager == nil {
-		hint = "read-only · ↑↓←→ · enter · n missions · e steps · m market · f allies · o settings · r refresh · q quit"
+		hint = "read-only · ↑↓←→ · enter · n missions · t templates · e steps · m market · f allies · o settings · r · q"
 	} else if m.deps.ToggleAutopilot != nil {
-		hint = "↑↓←→ · enter · n missions · c check-in · s strategy · e steps · A auto · m market · f allies · o settings · r refresh · q"
+		hint = "↑↓←→ · enter · n missions · c check-in · s strategy · t templates · e steps · A auto · m market · f allies · o · r · q"
 	}
 
 	lines := []string{m.gridView(), statusLine}

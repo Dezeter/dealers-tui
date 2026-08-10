@@ -258,6 +258,7 @@ func runFleet(args []string) error {
 
 		payBail := func() bool { return deps.Settings.Get(settings.KeyPayBail) }
 		tmpls := template.Load("templates.json")
+		deps.Templates = tmpls
 		strategy, stratStore := buildStrategies(b.cfg, deps.AreaNames, deps.Allies.IsAlly, payBail, tmpls, deps.Recipe.Enabled)
 		deps.Strategies = stratStore
 		eng := engine.New(b.cl, st, sender, ids, strategy, fileLogger())
@@ -289,24 +290,47 @@ func buildStrategyFromTemplate(t template.Template, areaNames map[uint8]string, 
 	if t.Strategy == "manual" {
 		return dealer.ManualStrategy{}
 	}
-	buy, okB := resolveAreaOr(areaNames, t.Params.BuyArea, "manhattan")
-	sell, okS := resolveAreaOr(areaNames, t.Params.SellArea, "amsterdam")
+	// The default zones must resolve from the area cache; custom per-template zone
+	// names fall back to these live, so a typo just trades the default route.
+	defBuy, okB := findAreaID(areaNames, "manhattan")
+	defSell, okS := findAreaID(areaNames, "amsterdam")
 	if !okB || !okS {
-		fmt.Printf("engine:   WARNING template %q needs buy+sell areas (buy=%q ok=%v · sell=%q ok=%v) — treated as manual\n",
-			t.Name, t.Params.BuyArea, okB, t.Params.SellArea, okS)
+		fmt.Printf("engine:   WARNING template %q needs Manhattan+Amsterdam in the area cache — treated as manual\n", t.Name)
 		return dealer.ManualStrategy{}
 	}
 	name := t.Name
-	cfg := dealer.StrategyConfig{
-		BuyArea: buy, SellArea: sell, Drug: t.Params.Drug,
-		IsAlly: isAlly, PayBail: payBail,
-		Recipe:          func() []string { return ts.EnabledSteps(name, globalRecipe) },
-		StepMax:         func(id string) int { return ts.StepMax(name, id) },
-		HeistDifficulty: int8(clampDiff(t.Params.HeistDifficulty)),
-		MissionPriority: t.Params.MissionPriority,
+	// Live params: read the template fresh each tick so in-UI edits (route, drug,
+	// difficulty, mission priority) apply on the next tick with no restart.
+	live := func() dealer.LiveParams {
+		buy, sell := defBuy, defSell
+		lp := dealer.LiveParams{HeistDifficulty: -1}
+		if cur, ok := ts.Get(name); ok {
+			if cur.Params.BuyArea != "" {
+				if id, ok := findAreaID(areaNames, cur.Params.BuyArea); ok {
+					buy = id
+				}
+			}
+			if cur.Params.SellArea != "" {
+				if id, ok := findAreaID(areaNames, cur.Params.SellArea); ok {
+					sell = id
+				}
+			}
+			lp.Drug = cur.Params.Drug
+			lp.HeistDifficulty = int8(clampDiff(cur.Params.HeistDifficulty))
+			lp.MissionPriority = cur.Params.MissionPriority
+		}
+		lp.BuyArea, lp.SellArea = buy, sell
+		return lp
 	}
+	cfg := dealer.StrategyConfig{
+		IsAlly: isAlly, PayBail: payBail,
+		Recipe:  func() []string { return ts.EnabledSteps(name, globalRecipe) },
+		StepMax: func(id string) int { return ts.StepMax(name, id) },
+		Live:    live,
+	}
+	init := live()
 	fmt.Printf("engine:   template %q (%s): buy@%s sell@%s drug=%s heist=%d\n",
-		name, t.Strategy, areaNames[buy], areaNames[sell], cfg.Drug, cfg.HeistDifficulty)
+		name, t.Strategy, areaNames[init.BuyArea], areaNames[init.SellArea], init.Drug, init.HeistDifficulty)
 	if t.Strategy == "pvp" {
 		return dealer.NewPvPRaiderCfg(cfg)
 	}
@@ -336,14 +360,6 @@ func buildStrategies(cfg *config.Config, areaNames map[uint8]string, isAlly func
 		return dealer.ManualStrategy{}
 	}
 	return dealer.MultiStrategy{Resolve: resolve}, store
-}
-
-// resolveAreaOr resolves a template's area name (or a default when unset) to an id.
-func resolveAreaOr(names map[uint8]string, want, def string) (uint8, bool) {
-	if want != "" {
-		return findAreaID(names, want)
-	}
-	return findAreaID(names, def)
 }
 
 // clampDiff bounds a template's heist difficulty to [-1, 2] (-1 = max affordable).

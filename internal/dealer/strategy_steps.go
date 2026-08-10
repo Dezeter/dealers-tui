@@ -55,16 +55,22 @@ type stepFn func(ctx context.Context, r StrategyReader, d Decision) (Action, boo
 type stepRunner struct {
 	recipe  func() []string         // ordered enabled step ids (live; nil/empty = default)
 	stepMax func(stepID string) int // per-step daily action cap (live; nil = defaults)
+	live    func() LiveParams       // per-tick tunables (heist difficulty, mission priority)
 	isAlly  func(uint64) bool
 	payBail func() bool
 	primary metricClass // classPVE or classPVP — core kind + follow_missions
 
-	heistDifficulty int8   // -1 = max affordable; 0..2 = fixed tier
-	missionPriority string // "" / "daily" = daily-first; "weekly" = weekly-first
-
 	heistCk   *dailyLimiter // bounds bank-heist check-in retries (see heistCheckInStep)
 	stepCount *dayCounter   // per-step daily action budgets (recipe Max)
 	core      stepFn
+}
+
+// params returns the live tunables (or a neutral default if unset).
+func (sr *stepRunner) params() LiveParams {
+	if sr.live != nil {
+		return sr.live()
+	}
+	return LiveParams{HeistDifficulty: -1}
 }
 
 func (sr *stepRunner) order() []string {
@@ -87,6 +93,7 @@ func (sr *stepRunner) Next(ctx context.Context, r StrategyReader, d Decision) (A
 		return Action{}, false
 	}
 	tokenID := d.Snap.TokenID
+	lp := sr.params()
 	for _, id := range sr.order() {
 		var a Action
 		var ok bool
@@ -98,9 +105,9 @@ func (sr *stepRunner) Next(ctx context.Context, r StrategyReader, d Decision) (A
 		case StepMissions:
 			a, ok = missionStep(ctx, r, tokenID)
 		case StepFollowMissions:
-			a, ok = missionSteer(ctx, r, d, sr.primary, sr.isAlly, sr.missionPriority)
+			a, ok = missionSteer(ctx, r, d, sr.primary, sr.isAlly, lp.MissionPriority)
 		case StepHeists:
-			a, ok = heistMissionStep(ctx, r, d, sr.heistDifficulty)
+			a, ok = heistMissionStep(ctx, r, d, lp.HeistDifficulty)
 		case StepCore:
 			a, ok = sr.core(ctx, r, d)
 		}

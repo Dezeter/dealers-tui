@@ -14,6 +14,7 @@ package template
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"sync"
 
@@ -156,6 +157,130 @@ func (s *Store) StepMax(name, stepID string) int {
 		}
 	}
 	return 0
+}
+
+// Update mutates the named template in place and persists. The mutate callback
+// receives a pointer to the stored template.
+func (s *Store) Update(name string, mutate func(*Template)) error {
+	s.mu.Lock()
+	for i := range s.list {
+		if s.list[i].Name == name {
+			mutate(&s.list[i])
+			s.mu.Unlock()
+			return s.save()
+		}
+	}
+	s.mu.Unlock()
+	return fmt.Errorf("template %q not found", name)
+}
+
+// Add appends a new template (name must be non-empty and unique) and persists.
+func (s *Store) Add(t Template) error {
+	if t.Name == "" {
+		return fmt.Errorf("template name required")
+	}
+	s.mu.Lock()
+	for _, e := range s.list {
+		if e.Name == t.Name {
+			s.mu.Unlock()
+			return fmt.Errorf("template %q already exists", t.Name)
+		}
+	}
+	s.list = append(s.list, t)
+	s.mu.Unlock()
+	return s.save()
+}
+
+// Clone copies the named template under a fresh unique name and persists,
+// returning the new name.
+func (s *Store) Clone(name string) (string, error) {
+	src, ok := s.Get(name)
+	if !ok {
+		return "", fmt.Errorf("template %q not found", name)
+	}
+	dup := src
+	dup.Steps = append([]recipe.Step(nil), src.Steps...)
+	dup.Name = s.uniqueName(name + "-copy")
+	if err := s.Add(dup); err != nil {
+		return "", err
+	}
+	return dup.Name, nil
+}
+
+// Delete removes the named template and persists. Removing the last template is
+// refused so the fleet always has something to assign.
+func (s *Store) Delete(name string) error {
+	s.mu.Lock()
+	if len(s.list) <= 1 {
+		s.mu.Unlock()
+		return fmt.Errorf("can't delete the last template")
+	}
+	for i := range s.list {
+		if s.list[i].Name == name {
+			s.list = append(s.list[:i], s.list[i+1:]...)
+			s.mu.Unlock()
+			return s.save()
+		}
+	}
+	s.mu.Unlock()
+	return fmt.Errorf("template %q not found", name)
+}
+
+// Rename changes a template's name (must stay unique) and persists. Per-dealer
+// assignments reference templates BY NAME, so a renamed template's dealers fall
+// back to the default until reassigned — the caller should warn.
+func (s *Store) Rename(old, neu string) error {
+	if neu == "" {
+		return fmt.Errorf("name required")
+	}
+	s.mu.Lock()
+	var target *Template
+	for i := range s.list {
+		if s.list[i].Name == neu && s.list[i].Name != old {
+			s.mu.Unlock()
+			return fmt.Errorf("template %q already exists", neu)
+		}
+		if s.list[i].Name == old {
+			target = &s.list[i]
+		}
+	}
+	if target == nil {
+		s.mu.Unlock()
+		return fmt.Errorf("template %q not found", old)
+	}
+	target.Name = neu
+	s.mu.Unlock()
+	return s.save()
+}
+
+// EnsureSteps fills a template's Steps from the default order (all on) when it has
+// none, so the editor can toggle/reorder/cap them. Persists if it changed.
+func (s *Store) EnsureSteps(name string, defaultOrder []string) error {
+	return s.Update(name, func(t *Template) {
+		if len(t.Steps) == 0 {
+			t.Steps = make([]recipe.Step, len(defaultOrder))
+			for i, id := range defaultOrder {
+				t.Steps[i] = recipe.Step{ID: id, On: true}
+			}
+		}
+	})
+}
+
+// uniqueName returns base, or base-2/base-3/… if taken. Caller holds no lock.
+func (s *Store) uniqueName(base string) string {
+	taken := map[string]bool{}
+	for _, e := range s.All() {
+		taken[e.Name] = true
+	}
+	if !taken[base] {
+		return base
+	}
+	for i := 2; ; i++ {
+		cand := fmt.Sprintf("%s-%d", base, i)
+		if !taken[cand] {
+			return cand
+		}
+	}
 }
 
 func (s *Store) save() error {

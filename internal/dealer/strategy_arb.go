@@ -16,9 +16,22 @@ const weedName = "weed"
 // bank), since the per-hustle cap is itself the rep-based stake limit.
 const stockpileMultiple = 3
 
+// LiveParams are the per-tick tunable parameters a strategy reads fresh each tick,
+// so an in-UI template edit takes effect on the next autopilot tick with no
+// restart. Areas are resolved ids (main resolves the template's zone names).
+type LiveParams struct {
+	BuyArea         uint8  // buy zone id
+	SellArea        uint8  // sell zone id
+	Drug            string // drug to trade ("" = weed)
+	HeistDifficulty int8   // -1 = max affordable; 0..2 = fixed tier
+	MissionPriority string // "" / "daily" = daily-first; "weekly" = weekly-first
+}
+
 // StrategyConfig configures a strategy instance from a template's Params + recipe
 // (wired by main). Zero values fall back to strategy defaults, so a neutral config
-// reproduces the classic weed Manhattan→Amsterdam run.
+// reproduces the classic weed Manhattan→Amsterdam run. Provide Live to read the
+// params fresh each tick (in-UI edits apply live); otherwise the static BuyArea/
+// SellArea/Drug/HeistDifficulty/MissionPriority are snapshotted once.
 type StrategyConfig struct {
 	BuyArea  uint8  // buy zone (default Manhattan)
 	SellArea uint8  // sell zone (default Amsterdam)
@@ -28,9 +41,24 @@ type StrategyConfig struct {
 	PayBail func() bool             // live auto-bail setting (may be nil)
 	Recipe  func() []string         // live ordered enabled step ids (nil → default)
 	StepMax func(stepID string) int // live per-step daily action cap (nil → defaults)
+	Live    func() LiveParams       // live tunables (nil → snapshot the fields below)
 
 	HeistDifficulty int8   // -1 = max affordable; 0..2 = fixed tier
 	MissionPriority string // "" / "daily" = daily-first; "weekly" = weekly-first
+}
+
+// resolveLive returns the config's live-params source, synthesising a constant one
+// from the static fields when none is supplied (so plain constructors/tests keep
+// working unchanged).
+func resolveLive(cfg StrategyConfig) func() LiveParams {
+	if cfg.Live != nil {
+		return cfg.Live
+	}
+	lp := LiveParams{
+		BuyArea: cfg.BuyArea, SellArea: cfg.SellArea, Drug: cfg.Drug,
+		HeistDifficulty: cfg.HeistDifficulty, MissionPriority: cfg.MissionPriority,
+	}
+	return func() LiveParams { return lp }
 }
 
 // PvEArbitrage runs the drug run: stockpile the traded drug in the buy zone (up to
@@ -38,10 +66,11 @@ type StrategyConfig struct {
 // and when holdings run dry head back to restock. Out of energy it parks in the
 // Black Market. It runs as the "core" step of a configurable pipeline (stepRunner).
 type PvEArbitrage struct {
-	Manhattan uint8  // buy area
-	Amsterdam uint8  // sell area
-	drug      string // drug name traded (default "weed")
+	Manhattan uint8  // buy area (refreshed from live() each tick)
+	Amsterdam uint8  // sell area (refreshed from live() each tick)
+	drug      string // drug name traded (refreshed from live() each tick; default "weed")
 
+	live    func() LiveParams // per-tick tunables (route/drug); never nil
 	isAlly  func(uint64) bool // do-not-attack set, for mission-driven PvP steering
 	payBail func() bool       // live "pay bail after a failed breakout" setting (may be nil)
 	spMu    *stakeParamCache
@@ -60,17 +89,25 @@ func NewPvEArbitrage(manhattan, amsterdam uint8, isAlly func(uint64) bool, payBa
 
 // NewPvEArbitrageCfg builds the trade strategy from a template config.
 func NewPvEArbitrageCfg(cfg StrategyConfig) *PvEArbitrage {
-	drug := cfg.Drug
-	if drug == "" {
-		drug = weedName
-	}
-	s := &PvEArbitrage{Manhattan: cfg.BuyArea, Amsterdam: cfg.SellArea, drug: drug, isAlly: cfg.IsAlly, payBail: cfg.PayBail, spMu: newStakeParamCache()}
+	live := resolveLive(cfg)
+	s := &PvEArbitrage{live: live, isAlly: cfg.IsAlly, payBail: cfg.PayBail, spMu: newStakeParamCache()}
+	s.refreshParams()
 	s.run = &stepRunner{
 		recipe: cfg.Recipe, stepMax: cfg.StepMax, isAlly: cfg.IsAlly, payBail: cfg.PayBail, primary: classPVE,
-		heistDifficulty: cfg.HeistDifficulty, missionPriority: cfg.MissionPriority,
-		heistCk: newDailyLimiter(), stepCount: newDayCounter(), core: s.tradeCore,
+		live: live, heistCk: newDailyLimiter(), stepCount: newDayCounter(), core: s.tradeCore,
 	}
 	return s
+}
+
+// refreshParams pulls the live route/drug into the struct fields. Called at the
+// top of tradeCore each tick; safe because the autopilot ticks sequentially (one
+// goroutine) and every dealer on a template shares its params.
+func (s *PvEArbitrage) refreshParams() {
+	lp := s.live()
+	s.Manhattan, s.Amsterdam = lp.BuyArea, lp.SellArea
+	if s.drug = lp.Drug; s.drug == "" {
+		s.drug = weedName
+	}
 }
 
 func (s *PvEArbitrage) Next(ctx context.Context, r StrategyReader, d Decision) (Action, bool) {
@@ -81,6 +118,7 @@ func (s *PvEArbitrage) Next(ctx context.Context, r StrategyReader, d Decision) (
 // buy/sell/travel routing). It always finds something to do while the dealer has
 // energy, so any recipe step placed AFTER it won't run.
 func (s *PvEArbitrage) tradeCore(ctx context.Context, r StrategyReader, d Decision) (Action, bool) {
+	s.refreshParams() // pick up any live route/drug change from the template
 	st := d.Snap.State
 	tokenID := d.Snap.TokenID
 	// Out of energy → retreat to the Black Market and stop.

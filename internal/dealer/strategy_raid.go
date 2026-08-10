@@ -33,17 +33,17 @@ func NewPvPRaider(manhattan, amsterdam uint8, isAlly func(uint64) bool, payBail 
 }
 
 // NewPvPRaiderCfg builds the raider from a template config. Its no-target fallback
-// trade run inherits the same buy/sell/drug params.
+// trade run inherits the same buy/sell/drug params (shared live source).
 func NewPvPRaiderCfg(cfg StrategyConfig) *PvPRaider {
 	if cfg.IsAlly == nil {
 		cfg.IsAlly = func(uint64) bool { return false }
 	}
+	cfg.Live = resolveLive(cfg) // pin one live source shared by the raider + its pve fallback
 	pve := NewPvEArbitrageCfg(cfg)
 	s := &PvPRaider{IsAlly: cfg.IsAlly, sold: newOncePerDay(), pve: pve}
 	s.run = &stepRunner{
 		recipe: cfg.Recipe, stepMax: cfg.StepMax, isAlly: cfg.IsAlly, payBail: cfg.PayBail, primary: classPVP,
-		heistDifficulty: cfg.HeistDifficulty, missionPriority: cfg.MissionPriority,
-		heistCk: newDailyLimiter(), stepCount: newDayCounter(), core: s.raidCore,
+		live: cfg.Live, heistCk: newDailyLimiter(), stepCount: newDayCounter(), core: s.raidCore,
 	}
 	return s
 }

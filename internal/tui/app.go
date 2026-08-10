@@ -13,6 +13,7 @@ import (
 	"dealers/internal/recipe"
 	"dealers/internal/settings"
 	"dealers/internal/store"
+	"dealers/internal/template"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -54,8 +55,11 @@ type Deps struct {
 	// Settings holds UI-managed global toggles (e.g. auto-pay bail); nil = none.
 	Settings *settings.Store
 
-	// Recipe is the UI-editable autopilot step order; nil = none.
+	// Recipe is the UI-editable autopilot step order (global fallback); nil = none.
 	Recipe *recipe.Store
+
+	// Templates is the named-preset store (per-NFT strategy templates); nil = none.
+	Templates *template.Store
 
 	// Version is the running build version (main.version), shown in the header.
 	Version string
@@ -148,6 +152,7 @@ const (
 	screenMissions
 	screenSettings
 	screenSteps
+	screenTemplates
 )
 
 // App is the root Elm model. It multiplexes the fleet and detail sub-models
@@ -162,6 +167,7 @@ type App struct {
 	missions MissionsModel
 	settings SettingsModel
 	steps    StepsModel
+	tmpls    TemplatesModel
 	alerts   []dealer.Alert
 	balance  *big.Int
 	update   updateInfo // populated once if a newer release is found
@@ -258,6 +264,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case screenSteps:
 			var cmd tea.Cmd
 			a.steps, cmd = a.steps.Update(msg)
+			return a, cmd
+		case screenTemplates:
+			var cmd tea.Cmd
+			a.tmpls, cmd = a.tmpls.Update(msg)
 			return a, cmd
 		default:
 			var cmd tea.Cmd
@@ -362,10 +372,19 @@ func (a App) updateFleetKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.screen = screenSettings
 		return a, a.settings.Init()
 	case "e":
-		// Autopilot step editor (recipe order/enable).
+		// Autopilot step editor (global recipe order/enable).
 		a.steps = NewSteps(a.deps)
 		a.screen = screenSteps
 		return a, a.steps.Init()
+	case "t":
+		// Strategy templates (named presets: base strategy + steps + params).
+		if a.deps.Templates == nil {
+			a.fleet.notice = errStyle.Render("read-only — templates unavailable")
+			return a, nil
+		}
+		a.tmpls = NewTemplates(a.deps)
+		a.screen = screenTemplates
+		return a, a.tmpls.Init()
 	case "c":
 		// Daily check-in for the whole fleet (gas only; skips jailed / already-done).
 		if a.deps.Manager == nil {
@@ -449,6 +468,8 @@ func (a App) View() string {
 		body = a.settings.View()
 	case screenSteps:
 		body = a.steps.View()
+	case screenTemplates:
+		body = a.tmpls.View()
 	default:
 		body = a.detail.View()
 	}
