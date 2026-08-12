@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"dealers/internal/dealer"
+	"dealers/internal/i18n"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -94,7 +95,7 @@ func runCheckInAll(ctx context.Context, deps Deps, snaps []dealer.Snapshot, nowU
 // "check-in: 3 done · 1 already · 1 jailed".
 func checkInSummary(results []checkInResult) string {
 	if len(results) == 0 {
-		return statusBarStyle.Render("check-in: no dealers")
+		return statusBarStyle.Render(i18n.T("checkin.none"))
 	}
 	counts := map[checkInStatus]int{}
 	var firstErr error
@@ -106,23 +107,23 @@ func checkInSummary(results []checkInResult) string {
 	}
 	// Stable, human-ordered summary.
 	order := []struct {
-		st    checkInStatus
-		label string
+		st  checkInStatus
+		key string
 	}{
-		{ciDone, "done"},
-		{ciAlready, "already"},
-		{ciSkipped, "not eligible"},
-		{ciJailed, "jailed"},
-		{ciUninit, "uninit"},
-		{ciError, "errors"},
+		{ciDone, "checkin.done"},
+		{ciAlready, "checkin.already"},
+		{ciSkipped, "checkin.not_eligible"},
+		{ciJailed, "checkin.jailed"},
+		{ciUninit, "checkin.uninit"},
+		{ciError, "checkin.errors"},
 	}
 	var parts []string
 	for _, o := range order {
 		if n := counts[o.st]; n > 0 {
-			parts = append(parts, fmt.Sprintf("%d %s", n, o.label))
+			parts = append(parts, fmt.Sprintf("%d %s", n, i18n.T(o.key)))
 		}
 	}
-	line := okStyle.Render("check-in: ") + strings.Join(parts, " · ")
+	line := okStyle.Render(i18n.T("checkin.prefix")) + strings.Join(parts, " · ")
 	if firstErr != nil {
 		line += "  " + errStyle.Render("⚠ "+firstErr.Error())
 	}

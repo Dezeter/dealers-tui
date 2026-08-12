@@ -4,79 +4,116 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"dealers/internal/recipe"
 )
 
+func tmp(t *testing.T) string { return filepath.Join(t.TempDir(), "templates.json") }
+
 func TestLoadSeedsDefaults(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "templates.json")
-	s := Load(path) // missing file → seed
-	if got := s.Names(); len(got) != 3 || got[0] != "pve" || got[1] != "pvp" || got[2] != "manual" {
-		t.Fatalf("default names = %v, want [pve pvp manual]", got)
+	p := tmp(t)
+	s := Load(p)
+	names := s.Names()
+	if len(names) != 3 || names[0] != "pve" || names[2] != "manual" {
+		t.Fatalf("default names = %v, want [pve pvp manual]", names)
 	}
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("Load should have written the seed file: %v", err)
-	}
-	// Default templates carry -1 (max affordable) heist difficulty and no step
-	// override, so they inherit the global recipe.
 	pve, ok := s.Get("pve")
-	if !ok || pve.Params.HeistDifficulty != -1 || len(pve.Steps) != 0 {
-		t.Fatalf("pve default = %+v, want HeistDifficulty -1 and no steps", pve)
+	if !ok || len(pve.Steps) == 0 || pve.Steps[len(pve.Steps)-1].Action != ActionTrade {
+		t.Fatalf("pve program should end in a trade step: %+v", pve.Steps)
+	}
+	if m, _ := s.Get("manual"); len(m.Steps) != 0 {
+		t.Errorf("manual should be an empty program, got %+v", m.Steps)
+	}
+	// File was written and reloads to the same program.
+	if _, err := os.Stat(p); err != nil {
+		t.Fatalf("templates.json not written: %v", err)
+	}
+	if got := Load(p).Names(); len(got) != 3 {
+		t.Errorf("reloaded names = %v", got)
 	}
 }
 
-func TestEnabledStepsFallbackAndOverride(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "templates.json")
-	s := Load(path)
-	global := func() []string { return []string{"a", "b", "c"} }
-
-	// A default (no-steps) template inherits the global recipe.
-	if got := s.EnabledSteps("pve", global); len(got) != 3 || got[0] != "a" {
-		t.Errorf("inherited steps = %v, want the global recipe", got)
-	}
-	// StepMax on an inheriting template is 0 (no caps).
-	if m := s.StepMax("pve", "core"); m != 0 {
-		t.Errorf("StepMax on inheriting template = %d, want 0", m)
-	}
-}
-
-func TestCustomTemplateStepsAndCaps(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "templates.json")
-	// Seed first, then overwrite with a custom template.
-	_ = Load(path)
-	custom := `[{"name":"heister","strategy":"pve","params":{"heist_difficulty":2},
-	  "steps":[{"id":"heist_checkin","on":true},{"id":"clear_stars","on":false},
-	           {"id":"heists","on":true,"max":2},{"id":"core","on":true,"max":4}]}]`
-	if err := os.WriteFile(path, []byte(custom), 0o600); err != nil {
+func TestAddCloneRenameDelete(t *testing.T) {
+	s := Load(tmp(t))
+	if err := s.Add(Template{Name: "raid", Steps: []Step{{Action: ActionPvP, Count: 4}}}); err != nil {
 		t.Fatal(err)
 	}
-	s := Load(path)
-	if names := s.Names(); len(names) != 1 || names[0] != "heister" {
-		t.Fatalf("names = %v, want [heister]", names)
+	if err := s.Add(Template{Name: "raid"}); err == nil {
+		t.Error("duplicate name should fail")
 	}
-	// Own steps used (clear_stars off is dropped), global ignored.
-	got := s.EnabledSteps("heister", func() []string { return []string{"should-not-appear"} })
-	want := []string{"heist_checkin", "heists", "core"}
-	if len(got) != len(want) {
-		t.Fatalf("enabled steps = %v, want %v", got, want)
+	dup, err := s.Clone("raid")
+	if err != nil || dup != "raid-copy" {
+		t.Fatalf("clone → (%q,%v)", dup, err)
 	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("enabled steps = %v, want %v", got, want)
-		}
+	if err := s.Rename("raid-copy", "raid2"); err != nil {
+		t.Fatal(err)
 	}
-	if m := s.StepMax("heister", "core"); m != 4 {
-		t.Errorf("core cap = %d, want 4", m)
+	if _, ok := s.Get("raid2"); !ok {
+		t.Error("rename lost the template")
 	}
-	if m := s.StepMax("heister", "heists"); m != 2 {
-		t.Errorf("heists cap = %d, want 2", m)
+	if err := s.Delete("raid2"); err != nil {
+		t.Fatal(err)
 	}
-	tpl, _ := s.Get("heister")
-	if tpl.Params.HeistDifficulty != 2 {
-		t.Errorf("heist difficulty = %d, want 2", tpl.Params.HeistDifficulty)
+	if _, ok := s.Get("raid2"); ok {
+		t.Error("delete left the template")
 	}
 }
 
-// guard against accidental removal of the recipe.Step Max field the caps ride on.
-var _ = recipe.Step{Max: 1}
+func TestUpdatePersists(t *testing.T) {
+	p := tmp(t)
+	s := Load(p)
+	err := s.Update("pve", func(tpl *Template) {
+		tpl.Steps = append(tpl.Steps, Step{Action: ActionHeist, HeistDifficulty: 1, Count: 2})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := Load(p).Get("pve")
+	last := got.Steps[len(got.Steps)-1]
+	if last.Action != ActionHeist || last.HeistDifficulty != 1 || last.Count != 2 {
+		t.Errorf("update did not persist: %+v", last)
+	}
+}
+
+func TestMigrateOldFormat(t *testing.T) {
+	p := tmp(t)
+	old := `[
+	  {"name":"pve","strategy":"pve","params":{"drug":"coke","buy_area":"Miami","sell_area":"Berlin","heist_difficulty":2},
+	   "steps":[{"id":"clear_stars","on":true},{"id":"core","on":true,"max":3},{"id":"heists","on":true}]},
+	  {"name":"idle","strategy":"manual","params":{"heist_difficulty":-1}}
+	]`
+	if err := os.WriteFile(p, []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s := Load(p)
+	pve, ok := s.Get("pve")
+	if !ok {
+		t.Fatal("migrated pve missing")
+	}
+	// First step is the breakout (old implicit jailbreak).
+	if pve.Steps[0].Action != ActionBreakout {
+		t.Errorf("migrated program should start with breakout, got %q", pve.Steps[0].Action)
+	}
+	// The core step became a trade carrying the old params + max→count.
+	var trade *Step
+	for i := range pve.Steps {
+		if pve.Steps[i].Action == ActionTrade {
+			trade = &pve.Steps[i]
+		}
+	}
+	if trade == nil || trade.Drug != "coke" || trade.BuyArea != "Miami" || trade.SellArea != "Berlin" || trade.Count != 3 {
+		t.Errorf("trade step not migrated correctly: %+v", trade)
+	}
+	// The heists step carried the difficulty.
+	var heist *Step
+	for i := range pve.Steps {
+		if pve.Steps[i].Action == ActionHeist {
+			heist = &pve.Steps[i]
+		}
+	}
+	if heist == nil || heist.HeistDifficulty != 2 {
+		t.Errorf("heist step not migrated: %+v", heist)
+	}
+	// manual → empty program.
+	if m, _ := s.Get("idle"); len(m.Steps) != 0 {
+		t.Errorf("manual should migrate to empty, got %+v", m.Steps)
+	}
+}

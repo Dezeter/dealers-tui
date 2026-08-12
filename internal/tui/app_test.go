@@ -10,8 +10,8 @@ import (
 
 func TestAlertBar(t *testing.T) {
 	a := App{alerts: []dealer.Alert{
-		{Level: dealer.AlertCrit, Text: "#3 JAILED"},
-		{Level: dealer.AlertWarn, Text: "#2 heat 5/5"},
+		{Level: dealer.AlertCrit, Kind: dealer.AlertJailed, TokenID: 3},
+		{Level: dealer.AlertWarn, Kind: dealer.AlertHeat, TokenID: 2, Heat: 5},
 	}}
 	bar := a.alertBar()
 	if !strings.Contains(bar, "JAILED") || !strings.Contains(bar, "heat 5/5") {

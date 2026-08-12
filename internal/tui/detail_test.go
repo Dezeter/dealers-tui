@@ -344,12 +344,12 @@ func TestTravelPicker(t *testing.T) {
 	m.deps.AreaNames = map[uint8]string{1: "Manhattan", 2: "Amsterdam", 3: "Colombia", 255: "Jail"}
 
 	areas := []bindings.AreaEconomy{
-		{AreaID: 0, IsActive: true, IsSafeHouse: true},                                                  // safe house → excluded (unreachable)
+		{AreaID: 0, IsActive: true, IsSafeHouse: true}, // safe house → excluded (unreachable)
 		{AreaID: 1, IsActive: true, MinReputation: big.NewInt(0), MovementFee: big.NewInt(0)},
-		{AreaID: 2, IsActive: true, MinReputation: big.NewInt(250)},                                     // current area → excluded
-		{AreaID: 3, IsActive: true, MinReputation: big.NewInt(500), MovementFee: big.NewInt(1e15)},      // reachable (814≥500)
-		{AreaID: 9, IsActive: true, MinReputation: big.NewInt(5500)},                                    // locked (814<5500)
-		{AreaID: 255, IsActive: true, IsJail: true},                                                     // jail → excluded
+		{AreaID: 2, IsActive: true, MinReputation: big.NewInt(250)},                                // current area → excluded
+		{AreaID: 3, IsActive: true, MinReputation: big.NewInt(500), MovementFee: big.NewInt(1e15)}, // reachable (814≥500)
+		{AreaID: 9, IsActive: true, MinReputation: big.NewInt(5500)},                               // locked (814<5500)
+		{AreaID: 255, IsActive: true, IsJail: true},                                                // jail → excluded
 	}
 	dests := m.filterDestinations(areas)
 	if len(dests) != 3 { // 1, 3, 9 (0 safehouse, 2 current, 255 jail excluded)

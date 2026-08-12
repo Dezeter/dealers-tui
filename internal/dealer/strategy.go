@@ -228,7 +228,17 @@ func (l *dailyLimiter) take(tokenID uint64, cap int) bool {
 // one. Between attempts the commit-reveal round makes the dealer skip ticks, so
 // the retries are naturally spaced.
 func posterFirst(st *bindings.FullDealerState) (Action, bool) {
-	if st.HeatLevel >= PosterHeatThreshold && st.DailyAttemptsRemaining > 0 {
+	return posterAt(st, PosterHeatThreshold)
+}
+
+// posterAt is posterFirst with a caller-chosen star threshold (0 = the default
+// PosterHeatThreshold). Used by the program's clear-stars step so a template can
+// set at how many stars it kicks in.
+func posterAt(st *bindings.FullDealerState, threshold uint8) (Action, bool) {
+	if threshold == 0 {
+		threshold = PosterHeatThreshold
+	}
+	if st.HeatLevel >= threshold && st.DailyAttemptsRemaining > 0 {
 		return Action{Kind: ActionClearHeat}, true
 	}
 	return Action{}, false

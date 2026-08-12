@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"dealers/internal/chain/bindings"
+	"dealers/internal/i18n"
 
 	"github.com/charmbracelet/bubbles/progress"
 	tea "github.com/charmbracelet/bubbletea"
@@ -110,14 +111,14 @@ func (m MissionsModel) Update(msg tea.Msg) (MissionsModel, tea.Cmd) {
 // accept runs the mission check-in (snapshots the epoch baseline).
 func (m MissionsModel) accept() (MissionsModel, tea.Cmd) {
 	if m.deps.Manager == nil {
-		m.notice = errStyle.Render("read-only — no signer")
+		m.notice = errStyle.Render(i18n.T("missions.ro_signer"))
 		return m, nil
 	}
 	if m.busy {
 		return m, nil
 	}
 	m.busy = true
-	m.notice = statusBarStyle.Render("accepting…")
+	m.notice = statusBarStyle.Render(i18n.T("missions.accepting"))
 	deps, id := m.deps, m.tokenID
 	return m, func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -125,25 +126,25 @@ func (m MissionsModel) accept() (MissionsModel, tea.Cmd) {
 		if err := deps.Manager.MissionCheckIn(ctx, id); err != nil {
 			return missionActionDoneMsg{err: err}
 		}
-		return missionActionDoneMsg{notice: "checked in — today's missions accepted"}
+		return missionActionDoneMsg{notice: i18n.T("missions.accepted")}
 	}
 }
 
 // claimAll claims every claimable mission, daily before weekly.
 func (m MissionsModel) claimAll() (MissionsModel, tea.Cmd) {
 	if m.deps.Manager == nil {
-		m.notice = errStyle.Render("read-only — no signer")
+		m.notice = errStyle.Render(i18n.T("missions.ro_signer"))
 		return m, nil
 	}
 	if m.busy {
 		return m, nil
 	}
 	if _, ok := bindings.FirstClaimable(m.missions); !ok {
-		m.notice = helpStyle.Render("nothing to claim")
+		m.notice = helpStyle.Render(i18n.T("missions.nothing_claim"))
 		return m, nil
 	}
 	m.busy = true
-	m.notice = statusBarStyle.Render("claiming…")
+	m.notice = statusBarStyle.Render(i18n.T("missions.claiming"))
 	deps, id := m.deps, m.tokenID
 	claimable := append([]bindings.MissionStatus(nil), m.missions...)
 	return m, func() tea.Msg {
@@ -158,14 +159,14 @@ func (m MissionsModel) claimAll() (MissionsModel, tea.Cmd) {
 			}
 			if err := deps.Manager.ClaimMission(ctx, id, tpl); err != nil {
 				if n > 0 {
-					return missionActionDoneMsg{notice: fmt.Sprintf("claimed %d, then: %v", n, err)}
+					return missionActionDoneMsg{notice: i18n.T("missions.claimed_then", n, err)}
 				}
 				return missionActionDoneMsg{err: err}
 			}
 			n++
 			markClaimed(claimable, tpl)
 		}
-		return missionActionDoneMsg{notice: fmt.Sprintf("claimed %d mission reward(s)", n)}
+		return missionActionDoneMsg{notice: i18n.T("missions.claimed_n", n)}
 	}
 }
 
@@ -182,28 +183,28 @@ func markClaimed(ms []bindings.MissionStatus, tpl uint64) {
 
 func (m MissionsModel) View() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s\n\n", titleStyle.Render(fmt.Sprintf("MISSIONS — dealer #%d", m.tokenID)))
+	fmt.Fprintf(&b, "%s\n\n", titleStyle.Render(i18n.T("missions.title", m.tokenID)))
 
 	switch {
 	case m.deps.Reader != nil && m.deps.Reader.MissionsAddr() == (common.Address{}):
-		return b.String() + helpStyle.Render("missions contract not deployed on this network")
+		return b.String() + helpStyle.Render(i18n.T("missions.not_deployed"))
 	case m.loading:
-		b.WriteString(helpStyle.Render("loading…\n"))
+		b.WriteString(helpStyle.Render(i18n.T("common.loading") + "\n"))
 	case m.err != "":
 		b.WriteString(errStyle.Render("⚠ "+m.err) + "\n")
 	case len(m.missions) == 0:
-		b.WriteString(helpStyle.Render("no active missions\n"))
+		b.WriteString(helpStyle.Render(i18n.T("missions.none") + "\n"))
 	default:
-		b.WriteString(renderMissionGroup("DAILY", m.missions, bindings.CadenceDaily))
-		b.WriteString(renderMissionGroup("WEEKLY", m.missions, bindings.CadenceWeekly))
+		b.WriteString(renderMissionGroup(i18n.T("missions.daily"), m.missions, bindings.CadenceDaily))
+		b.WriteString(renderMissionGroup(i18n.T("missions.weekly"), m.missions, bindings.CadenceWeekly))
 	}
 
 	if m.notice != "" {
 		b.WriteString("\n" + m.notice + "\n")
 	}
-	hint := "a accept (check-in) · c claim all · r refresh · esc back"
+	hint := i18n.T("missions.hint")
 	if m.deps.Manager == nil {
-		hint = "read-only · r refresh · esc back"
+		hint = i18n.T("missions.hint_ro")
 	}
 	b.WriteString("\n" + helpStyle.Render(hint))
 	return b.String()
@@ -234,14 +235,14 @@ func renderMission(s bindings.MissionStatus) string {
 		}
 	}
 	bar := missionBar.ViewAs(pct)
-	state := statusBarStyle.Render("in progress")
+	state := statusBarStyle.Render(i18n.T("missions.in_progress"))
 	switch {
 	case s.Claimed:
-		state = helpStyle.Render("claimed ✓")
+		state = helpStyle.Render(i18n.T("missions.claimed"))
 	case s.Claimable:
-		state = okStyle.Render("CLAIMABLE ★")
+		state = okStyle.Render(i18n.T("missions.claimable"))
 	case !s.CheckedIn:
-		state = negStyle.Render("not accepted — press a")
+		state = negStyle.Render(i18n.T("missions.not_accepted"))
 	}
 	return fmt.Sprintf("%s %s  %s  %s", bar,
 		fmt.Sprintf("%d/%d", s.Progress, m.Target), missionReward(m), state)
@@ -251,19 +252,19 @@ func renderMission(s bindings.MissionStatus) string {
 func missionReward(m bindings.MissionTemplate) string {
 	var parts []string
 	if m.RepReward > 0 {
-		parts = append(parts, fmt.Sprintf("+%d rep", m.RepReward))
+		parts = append(parts, i18n.T("missions.rew_rep", m.RepReward))
 	}
 	if m.InfamyReward > 0 {
-		parts = append(parts, fmt.Sprintf("+%d inf", m.InfamyReward))
+		parts = append(parts, i18n.T("missions.rew_inf", m.InfamyReward))
 	}
 	if m.CashReward != nil && m.CashReward.Sign() > 0 {
-		parts = append(parts, "+"+m.CashReward.String()+" cash")
+		parts = append(parts, i18n.T("missions.rew_cash", m.CashReward.String()))
 	}
 	if m.DrugAmount > 0 {
-		parts = append(parts, fmt.Sprintf("+%d drug#%d", m.DrugAmount, m.DrugID))
+		parts = append(parts, i18n.T("missions.rew_drug", m.DrugAmount, m.DrugID))
 	}
 	if len(parts) == 0 {
-		return helpStyle.Render("(no reward)")
+		return helpStyle.Render(i18n.T("missions.no_reward"))
 	}
 	return posStyle.Render(strings.Join(parts, ", "))
 }

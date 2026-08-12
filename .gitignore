@@ -16,7 +16,9 @@ dealers.log
 allies.json
 strategies.json
 settings.json
-recipes.json
+templates.json
+language.json
+progress.json
 
 # development-only docs (not needed to build; kept local, not published)
 CLAUDE.md

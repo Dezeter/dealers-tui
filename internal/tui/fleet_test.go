@@ -79,11 +79,11 @@ func TestResponsiveColumns(t *testing.T) {
 	cases := []struct {
 		width, wantCols int
 	}{
-		{0, 1},    // unknown width
-		{50, 1},   // one card fits
-		{100, 2},  // two columns
-		{160, 3},  // three
-		{400, 4},  // capped at maxCols
+		{0, 1},   // unknown width
+		{50, 1},  // one card fits
+		{100, 2}, // two columns
+		{160, 3}, // three
+		{400, 4}, // capped at maxCols
 	}
 	for _, c := range cases {
 		m.width = c.width

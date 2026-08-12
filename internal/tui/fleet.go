@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"dealers/internal/dealer"
+	"dealers/internal/i18n"
 	"dealers/internal/store"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -198,22 +199,22 @@ func (m *FleetModel) ensureVisible() {
 }
 
 func (m FleetModel) View() string {
-	status := fmt.Sprintf("%d dealers", len(m.deps.IDs))
+	status := i18n.T("fleet.dealers", len(m.deps.IDs))
 	if m.loading {
-		status += " · refreshing…"
+		status += i18n.T("fleet.refreshing")
 	} else if !m.lastAt.IsZero() {
-		status += " · updated " + m.lastAt.Format("15:04:05")
+		status += i18n.T("fleet.updated", m.lastAt.Format("15:04:05"))
 	}
 	statusLine := statusBarStyle.Render(status)
 	if m.lastErr != "" {
 		statusLine += "  " + errStyle.Render("⚠ "+m.lastErr)
 	}
 
-	hint := "↑↓←→ · enter · n missions · c check-in · s strategy · t templates · e steps · m market · f allies · o settings · r · q"
+	hint := i18n.T("fleet.hint")
 	if m.deps.Manager == nil {
-		hint = "read-only · ↑↓←→ · enter · n missions · t templates · e steps · m market · f allies · o settings · r · q"
+		hint = i18n.T("fleet.hint_ro")
 	} else if m.deps.ToggleAutopilot != nil {
-		hint = "↑↓←→ · enter · n missions · c check-in · s strategy · t templates · e steps · A auto · m market · f allies · o · r · q"
+		hint = i18n.T("fleet.hint_auto")
 	}
 
 	lines := []string{m.gridView(), statusLine}
@@ -232,9 +233,9 @@ func (m FleetModel) View() string {
 func (m FleetModel) gridView() string {
 	if len(m.snaps) == 0 {
 		if m.loading {
-			return helpStyle.Render("loading…")
+			return helpStyle.Render(i18n.T("common.loading"))
 		}
-		return helpStyle.Render("no dealers")
+		return helpStyle.Render(i18n.T("fleet.no_dealers"))
 	}
 	c := m.cols()
 	cw := m.cardWidth()
@@ -246,7 +247,7 @@ func (m FleetModel) gridView() string {
 
 	var rows []string
 	if m.topRow > 0 {
-		rows = append(rows, helpStyle.Render(fmt.Sprintf("  ↑ %d more", m.topRow*c)))
+		rows = append(rows, helpStyle.Render(i18n.T("fleet.more_up", m.topRow*c)))
 	}
 	for r := m.topRow; r < end; r++ {
 		var cards []string
@@ -264,7 +265,7 @@ func (m FleetModel) gridView() string {
 		rows = append(rows, lipgloss.JoinHorizontal(lipgloss.Top, cards...))
 	}
 	if end < totalRows {
-		rows = append(rows, helpStyle.Render(fmt.Sprintf("  ↓ %d more", len(m.snaps)-end*c)))
+		rows = append(rows, helpStyle.Render(i18n.T("fleet.more_down", len(m.snaps)-end*c)))
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, rows...)
 }
@@ -274,7 +275,7 @@ func (m FleetModel) fleetLogView() string {
 	if len(m.fleetLog) == 0 {
 		return ""
 	}
-	lines := []string{sectionStyle.Render("Activity")}
+	lines := []string{sectionStyle.Render(i18n.T("fleet.activity"))}
 	for _, l := range m.fleetLog {
 		lines = append(lines, fmt.Sprintf("  %s %s",
 			helpStyle.Render(fmt.Sprintf("#%d", l.TokenID)), colorizeLog(l.Summary)))
@@ -313,8 +314,8 @@ func renderCard(deps Deps, s dealer.Snapshot, selected bool, width int) string {
 	var body []string
 	if s.Err != nil || s.State == nil {
 		body = []string{
-			errStyle.Render(truncate("read error: "+errText(s), inner)),
-			labelStyle.Render("no data"),
+			errStyle.Render(truncate(i18n.T("fleet.read_error")+errText(s), inner)),
+			labelStyle.Render(i18n.T("fleet.no_data")),
 			"",
 		}
 	} else {
@@ -325,13 +326,13 @@ func renderCard(deps Deps, s dealer.Snapshot, selected bool, width int) string {
 				labelStyle.Render("INF"), valStyle(bigStr(st.Infamy)), rankTag(pvp),
 				labelStyle.Render("$")+valStyle(bigStr(st.CashBalance))),
 			fmt.Sprintf("%s %s   %s %s   %s",
-				labelStyle.Render("Energy"), meter(int(st.DailyAttemptsRemaining), int(st.MaxAttempts), lipgloss.Color("42"))+" "+dimNum(st.DailyAttemptsRemaining, st.MaxAttempts),
-				labelStyle.Render("Heat"), meter(int(st.HeatLevel), 5, heatMeterColor(st.HeatLevel))+fmt.Sprintf(" %d/5", st.HeatLevel),
+				labelStyle.Render(i18n.T("fleet.lbl_energy")), meter(int(st.DailyAttemptsRemaining), int(st.MaxAttempts), lipgloss.Color("42"))+" "+dimNum(st.DailyAttemptsRemaining, st.MaxAttempts),
+				labelStyle.Render(i18n.T("fleet.lbl_heat")), meter(int(st.HeatLevel), 5, heatMeterColor(st.HeatLevel))+fmt.Sprintf(" %d/5", st.HeatLevel),
 				labelStyle.Render("@")+deps.AreaName(st.CurrentArea)),
 			fmt.Sprintf("%s %s   %s %s   %s %s",
-				labelStyle.Render("check-in"), chkColor(s).Render(checkInCell(s)),
-				labelStyle.Render("missions"), missColor(s).Render(missionLabel(s)),
-				labelStyle.Render("auto"), autoStyle.Render(deps.StrategyTag(s.TokenID))),
+				labelStyle.Render(i18n.T("fleet.lbl_checkin")), chkColor(s).Render(checkInCell(s)),
+				labelStyle.Render(i18n.T("fleet.lbl_missions")), missColor(s).Render(missionLabel(s)),
+				labelStyle.Render(i18n.T("fleet.lbl_auto")), autoStyle.Render(deps.StrategyTag(s.TokenID))),
 		}
 	}
 	// Pad body to a fixed number of content rows so every card is the same height.
@@ -377,7 +378,25 @@ func statusChip(s dealer.Snapshot) string {
 	default:
 		st = st.Background(lipgloss.Color("22")).Foreground(lipgloss.Color("231"))
 	}
-	return st.Render(txt)
+	return st.Render(statusLabel(txt))
+}
+
+// statusLabel localizes a raw Snapshot.Status() value for display; the raw value
+// stays the switch key everywhere so styling/logic is unaffected.
+func statusLabel(raw string) string {
+	switch raw {
+	case "JAILED":
+		return i18n.T("status.jailed")
+	case "SAFEHOUSE":
+		return i18n.T("status.safehouse")
+	case "UNINIT":
+		return i18n.T("status.uninit")
+	case "ERR":
+		return i18n.T("status.err")
+	case "IDLE":
+		return i18n.T("status.idle")
+	}
+	return raw
 }
 
 // fitBetween places left and right on one line inner cells wide, right-aligned.
@@ -431,7 +450,7 @@ func errText(s dealer.Snapshot) string {
 	if s.Err != nil {
 		return s.Err.Error()
 	}
-	return "uninitialised"
+	return i18n.T("fleet.uninitialised")
 }
 
 // checkInCell renders the daily check-in status glyph.
@@ -464,11 +483,11 @@ func missionLabel(s dealer.Snapshot) string {
 	case !s.MissionsKnown:
 		return "-"
 	case s.MissionsClaimable > 0:
-		return fmt.Sprintf("★%d claimable", s.MissionsClaimable)
+		return i18n.T("fleet.miss_claimable", s.MissionsClaimable)
 	case s.MissionsNeedCheckIn:
-		return "○ accept"
+		return i18n.T("fleet.miss_accept")
 	default:
-		return "✓ up to date"
+		return i18n.T("fleet.miss_uptodate")
 	}
 }
 
@@ -498,7 +517,7 @@ func missColor(s dealer.Snapshot) lipgloss.Style {
 func firstErr(snaps []dealer.Snapshot) string {
 	for _, s := range snaps {
 		if s.Err != nil {
-			return fmt.Sprintf("dealer %d: %v", s.TokenID, s.Err)
+			return i18n.T("fleet.err_dealer", s.TokenID, s.Err)
 		}
 	}
 	return ""

@@ -29,8 +29,9 @@ import (
 	"dealers/internal/config"
 	"dealers/internal/dealer"
 	"dealers/internal/engine"
+	"dealers/internal/i18n"
 	"dealers/internal/preflight"
-	"dealers/internal/recipe"
+	"dealers/internal/progstate"
 	"dealers/internal/settings"
 	"dealers/internal/store"
 	"dealers/internal/template"
@@ -207,8 +208,9 @@ func runFleet(args []string) error {
 	// UI-managed global toggles (settings.json) — e.g. auto-pay bail. Always
 	// available so the preference persists even in read-only.
 	deps.Settings = settings.Load("settings.json")
-	// UI-editable autopilot step order (recipes.json).
-	deps.Recipe = recipe.Load("recipes.json", dealer.DefaultStepOrder())
+	// UI language (language.json): applies the saved choice process-wide on load;
+	// switchable on the Settings screen. Russian by default.
+	deps.Lang = i18n.Load("language.json")
 	// Area names (FR12) — best-effort, static, fetched once.
 	areaCtx, cancelA := context.WithTimeout(appCtx, 20*time.Second)
 	if names, err := reader.AreaNames(areaCtx); err == nil {
@@ -259,7 +261,10 @@ func runFleet(args []string) error {
 		payBail := func() bool { return deps.Settings.Get(settings.KeyPayBail) }
 		tmpls := template.Load("templates.json")
 		deps.Templates = tmpls
-		strategy, stratStore := buildStrategies(b.cfg, deps.AreaNames, deps.Allies.IsAlly, payBail, tmpls, deps.Recipe.Enabled)
+		// Per-dealer program position (which step, how many reps) — persisted so the
+		// sequential program resumes across restarts.
+		progState := progstate.Load("progress.json")
+		strategy, stratStore := buildProgram(b.cfg, deps.AreaNames, deps.Allies.IsAlly, payBail, tmpls, progAdapter{progState})
 		deps.Strategies = stratStore
 		eng := engine.New(b.cl, st, sender, ids, strategy, fileLogger())
 		eng.Manager().SetDrugNames(drugNames)
@@ -280,86 +285,55 @@ func runFleet(args []string) error {
 	return err
 }
 
-// buildStrategyFromTemplate turns a named template into a concrete Strategy. The
-// pve/pvp strategies need buy/sell area ids (resolved by name from the area cache,
-// defaulting to Manhattan/Amsterdam); if either can't be found it falls back to a
-// no-op ManualStrategy rather than risk auto-travelling to a bogus area. The
-// recipe + per-step caps are read LIVE from the template store by name, so a later
-// in-UI edit applies on the next tick with no restart.
-func buildStrategyFromTemplate(t template.Template, areaNames map[uint8]string, isAlly func(uint64) bool, payBail func() bool, ts *template.Store, globalRecipe func() []string) dealer.Strategy {
-	if t.Strategy == "manual" {
-		return dealer.ManualStrategy{}
-	}
-	// The default zones must resolve from the area cache; custom per-template zone
-	// names fall back to these live, so a typo just trades the default route.
-	defBuy, okB := findAreaID(areaNames, "manhattan")
-	defSell, okS := findAreaID(areaNames, "amsterdam")
-	if !okB || !okS {
-		fmt.Printf("engine:   WARNING template %q needs Manhattan+Amsterdam in the area cache — treated as manual\n", t.Name)
-		return dealer.ManualStrategy{}
-	}
-	name := t.Name
-	// Live params: read the template fresh each tick so in-UI edits (route, drug,
-	// difficulty, mission priority) apply on the next tick with no restart.
-	live := func() dealer.LiveParams {
-		buy, sell := defBuy, defSell
-		lp := dealer.LiveParams{HeistDifficulty: -1}
-		if cur, ok := ts.Get(name); ok {
-			if cur.Params.BuyArea != "" {
-				if id, ok := findAreaID(areaNames, cur.Params.BuyArea); ok {
-					buy = id
-				}
-			}
-			if cur.Params.SellArea != "" {
-				if id, ok := findAreaID(areaNames, cur.Params.SellArea); ok {
-					sell = id
-				}
-			}
-			lp.Drug = cur.Params.Drug
-			lp.HeistDifficulty = int8(clampDiff(cur.Params.HeistDifficulty))
-			lp.MissionPriority = cur.Params.MissionPriority
-		}
-		lp.BuyArea, lp.SellArea = buy, sell
-		return lp
-	}
-	cfg := dealer.StrategyConfig{
-		IsAlly: isAlly, PayBail: payBail,
-		Recipe:  func() []string { return ts.EnabledSteps(name, globalRecipe) },
-		StepMax: func(id string) int { return ts.StepMax(name, id) },
-		Live:    live,
-	}
-	init := live()
-	fmt.Printf("engine:   template %q (%s): buy@%s sell@%s drug=%s heist=%d\n",
-		name, t.Strategy, areaNames[init.BuyArea], areaNames[init.SellArea], init.Drug, init.HeistDifficulty)
-	if t.Strategy == "pvp" {
-		return dealer.NewPvPRaiderCfg(cfg)
-	}
-	return dealer.NewPvEArbitrageCfg(cfg)
+// progAdapter adapts a progstate.Store to the dealer.ProgState interface.
+type progAdapter struct{ s *progstate.Store }
+
+func (a progAdapter) Get(id uint64) (int, int) { p := a.s.Get(id); return p.Step, p.Reps }
+func (a progAdapter) Set(id uint64, step, reps int) error {
+	return a.s.Set(id, progstate.Pos{Step: step, Reps: reps})
 }
 
-// buildStrategies builds one instance per template and returns a MultiStrategy
-// that resolves each dealer's assigned template LIVE from the autostrat store — so
-// an in-UI reassignment (s) takes effect on the next tick. autostrat's selector
-// order is set to the template names, and its assignments (strategies.json) now
-// hold template names; the seeded pve/pvp/manual templates match the old tags, so
-// existing assignments keep working.
-func buildStrategies(cfg *config.Config, areaNames map[uint8]string, isAlly func(uint64) bool, payBail func() bool, ts *template.Store, globalRecipe func() []string) (dealer.Strategy, *autostrat.Store) {
-	inst := map[string]dealer.Strategy{}
-	for _, t := range ts.All() {
-		inst[t.Name] = buildStrategyFromTemplate(t, areaNames, isAlly, payBail, ts, globalRecipe)
-	}
+// buildProgram wires the sequential Program strategy: it resolves each dealer's
+// assigned template LIVE from the autostrat store (so an in-UI reassignment with
+// 's' takes effect next tick) and compiles the template's steps into ProgSteps,
+// resolving trade zone NAMES to area ids (defaulting to Manhattan/Amsterdam; a
+// typo just trades the default route). Editing a template applies next tick too,
+// since the steps are re-read every tick.
+func buildProgram(cfg *config.Config, areaNames map[uint8]string, isAlly func(uint64) bool, payBail func() bool, ts *template.Store, ps dealer.ProgState) (dealer.Strategy, *autostrat.Store) {
 	autostrat.Order = ts.Names() // the fleet 's' selector cycles the template names
 	store := autostrat.Load("strategies.json", cfg.AutopilotStrategy, cfg.DealerStrategies)
-	resolve := func(id uint64) dealer.Strategy {
-		if s := inst[store.Get(id)]; s != nil {
-			return s
+	defBuy, _ := findAreaID(areaNames, "manhattan")
+	defSell, _ := findAreaID(areaNames, "amsterdam")
+	resolveArea := func(name string, def uint8) uint8 {
+		if name == "" {
+			return def
 		}
-		if s := inst[store.Default()]; s != nil {
-			return s
+		if id, ok := findAreaID(areaNames, name); ok {
+			return id
 		}
-		return dealer.ManualStrategy{}
+		return def
 	}
-	return dealer.MultiStrategy{Resolve: resolve}, store
+	steps := func(id uint64) []dealer.ProgStep {
+		t, ok := ts.Get(store.Get(id))
+		if !ok {
+			return nil
+		}
+		out := make([]dealer.ProgStep, 0, len(t.Steps))
+		for _, s := range t.Steps {
+			out = append(out, dealer.ProgStep{
+				Action:          s.Action,
+				Drug:            s.Drug,
+				BuyArea:         resolveArea(s.BuyArea, defBuy),
+				SellArea:        resolveArea(s.SellArea, defSell),
+				HeistDifficulty: int8(clampDiff(int(s.HeistDifficulty))),
+				HeatAt:          s.HeatAt,
+				PayBail:         s.PayBail,
+				Count:           s.Count,
+			})
+		}
+		return out
+	}
+	return dealer.NewProgram(steps, ps, isAlly, payBail), store
 }
 
 // clampDiff bounds a template's heist difficulty to [-1, 2] (-1 = max affordable).

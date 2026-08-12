@@ -1,15 +1,18 @@
-// Package template manages named, reusable autopilot presets ("strategy
-// templates"). A template bundles a base strategy (pve/pvp/manual), an optional
-// per-template step recipe with per-step daily caps, and tuning parameters
-// (trade route, heist difficulty, mission priority). Templates are assigned to
-// dealers per NFT (via internal/autostrat, whose values are template names), so
-// different dealers can run genuinely different jobs on autopilot.
+// Package template manages named autopilot programs ("strategy templates"). A
+// template is an ORDERED LIST OF STEPS the autopilot runs sequentially per dealer:
+// step 1 repeats until it's satisfied (a fixed count, or "until it has nothing
+// left to do"), then the program advances to step 2, and so on; at the end it
+// loops back to the start. Each step is self-contained — it names an action
+// (trade / pvp / heist / clear stars / breakout / heist check-in / missions) and
+// carries that action's own parameters — so there is no separate "strategy"
+// concept: the steps ARE the strategy.
 //
-// The definitions live in templates.json (hand-editable now, UI-editable later).
-// A template with no Steps inherits the global step recipe, and zero-valued
-// Params mean "the strategy's built-in default" — so the seeded pve/pvp/manual
-// templates reproduce today's behaviour exactly, and only customised templates
-// change anything.
+// Templates are assigned to dealers per NFT (via internal/autostrat, whose values
+// are template names) so different dealers run different programs. The per-dealer
+// program position (which step, how many reps done) lives in internal/progstate.
+//
+// Definitions persist to templates.json. An older strategy/params/recipe file is
+// migrated to the step-program shape on load.
 package template
 
 import (
@@ -17,41 +20,82 @@ import (
 	"fmt"
 	"os"
 	"sync"
-
-	"dealers/internal/recipe"
 )
 
-// Params tunes the parameterised behaviours on top of a template's base strategy.
-// Every zero value means "use the strategy default".
-type Params struct {
-	Drug     string `json:"drug,omitempty"`      // trade this drug; "" = weed
-	BuyArea  string `json:"buy_area,omitempty"`  // buy-zone name; "" = Manhattan
-	SellArea string `json:"sell_area,omitempty"` // sell-zone name; "" = Amsterdam
+// Action identifiers for a program step. Stable JSON values — never rename.
+const (
+	ActionBreakout     = "breakout"      // escape jail (free daily attempt, then bail if the setting is on)
+	ActionClearStars   = "clear_stars"   // free wanted-poster heat clear (at heat ≥ 3)
+	ActionHeistCheckIn = "heist_checkin" // daily bank-heist season check-in (auto-joins, pays $CASH)
+	ActionMissions     = "missions"      // claim finished missions + accept the new epoch's
+	ActionTrade        = "trade"         // buy/haul/sell a drug between two zones
+	ActionPvP          = "pvp"           // attack a present non-ally target
+	ActionHeist        = "heist"         // run a heist at a difficulty and bank it
+)
 
-	// HeistDifficulty fixes the heist tier: -1 (or 0-value via NormalizeParams) =
-	// highest the dealer can afford; 0/1/2 = that exact difficulty.
-	HeistDifficulty int `json:"heist_difficulty"`
-
-	// MissionPriority orders mission steering: "daily" (default) or "weekly".
-	MissionPriority string `json:"mission_priority,omitempty"`
+// ActionOrder is the catalog order the editor cycles through.
+var ActionOrder = []string{
+	ActionTrade, ActionPvP, ActionHeist, ActionClearStars, ActionBreakout, ActionHeistCheckIn, ActionMissions,
 }
 
-// Template is a named autopilot preset.
+// usesTrade / usesHeist report which params a given action reads (for the editor).
+func UsesTradeParams(action string) bool { return action == ActionTrade }
+func UsesHeistParams(action string) bool { return action == ActionHeist }
+
+// Step is one program step: an action plus the params that action needs, and how
+// many times to repeat it before advancing.
+type Step struct {
+	Action string `json:"action"`
+
+	// Trade params (Action == "trade"). Empty = weed / Manhattan / Amsterdam.
+	Drug     string `json:"drug,omitempty"`
+	BuyArea  string `json:"buy_area,omitempty"`
+	SellArea string `json:"sell_area,omitempty"`
+
+	// Heist param (Action == "heist"): -1 = highest affordable; 0..2 = fixed tier.
+	HeistDifficulty int8 `json:"heist_difficulty,omitempty"`
+
+	// HeatAt (Action == "clear_stars"): the wanted-star level at which the step
+	// activates. 0 = the default of 3. It won't clear below this threshold.
+	HeatAt int8 `json:"heat_at,omitempty"`
+
+	// PayBail (Action == "breakout"): when the free daily breakout attempt is used
+	// up, pay ETH bail to leave now instead of waiting for tomorrow's free attempt.
+	PayBail bool `json:"pay_bail,omitempty"`
+
+	// Count is how many times to repeat the action before advancing to the next
+	// step. 0 means "until it has nothing left to do" (до успеха): keep running the
+	// step while it can still act, then advance. N means "advance after N actions".
+	Count int `json:"count,omitempty"`
+}
+
+// UsesHeatParam / UsesBailParam report which extra param a given action reads.
+func UsesHeatParam(action string) bool { return action == ActionClearStars }
+func UsesBailParam(action string) bool { return action == ActionBreakout }
+
+// Template is a named autopilot program.
 type Template struct {
-	Name     string        `json:"name"`
-	Strategy string        `json:"strategy"`        // pve | pvp | manual
-	Steps    []recipe.Step `json:"steps,omitempty"` // empty = inherit the global recipe
-	Params   Params        `json:"params"`
+	Name  string `json:"name"`
+	Steps []Step `json:"steps"`
 }
 
-// Defaults returns the seeded pve/pvp/manual templates: no step override (inherit
-// the global recipe), neutral params (HeistDifficulty -1). They reproduce the
-// app's current behaviour so existing per-dealer assignments keep working.
+// Defaults returns the seeded programs. They keep the classic pve/pvp/manual names
+// (so existing per-dealer assignments, which reference templates by name, still
+// resolve) and reproduce roughly the old behaviour as explicit step programs.
 func Defaults() []Template {
-	mk := func(name string) Template {
-		return Template{Name: name, Strategy: name, Params: Params{HeistDifficulty: -1}}
+	safety := []Step{
+		{Action: ActionBreakout},
+		{Action: ActionClearStars},
+		{Action: ActionHeistCheckIn},
+		{Action: ActionMissions},
 	}
-	return []Template{mk("pve"), mk("pvp"), mk("manual")}
+	pve := append(append([]Step(nil), safety...), Step{Action: ActionTrade})
+	pvp := append(append([]Step(nil), safety...), Step{Action: ActionPvP})
+	return []Template{
+		{Name: "pve", Steps: pve},
+		{Name: "pvp", Steps: pvp},
+		{Name: "manual", Steps: nil}, // does nothing
+	}
 }
 
 // Store holds the template definitions, persisted to a JSON file.
@@ -61,15 +105,12 @@ type Store struct {
 	list []Template
 }
 
-// Load reads templates.json; on a missing/empty/invalid file it seeds the
-// defaults and writes them so the file is there to edit.
+// Load reads templates.json (migrating an old strategy/params file); a missing or
+// empty file seeds the defaults and writes them so the file is there to edit.
 func Load(path string) *Store {
 	s := &Store{path: path}
 	if data, err := os.ReadFile(path); err == nil {
-		var list []Template
-		if json.Unmarshal(data, &list) == nil {
-			s.list = sanitize(list)
-		}
+		s.list = parse(data)
 	}
 	if len(s.list) == 0 {
 		s.list = Defaults()
@@ -78,18 +119,19 @@ func Load(path string) *Store {
 	return s
 }
 
-// sanitize drops nameless templates and defaults an unset HeistDifficulty (the
-// JSON zero) to -1 ("max affordable") only when the template also omits it — a
-// template that explicitly wants difficulty 0 must set it as 0 and is preserved.
-// Since we can't tell 0-because-omitted from 0-because-chosen in plain JSON, we
-// treat 0 as "difficulty 0" and rely on Defaults()/UI to write -1 for "auto".
-func sanitize(list []Template) []Template {
-	out := list[:0]
-	for _, t := range list {
-		if t.Name == "" {
+// parse unmarshals the file, migrating any templates still in the old
+// strategy/params/recipe shape into step programs.
+func parse(data []byte) []Template {
+	var raw []rawTemplate
+	if json.Unmarshal(data, &raw) != nil {
+		return nil
+	}
+	out := make([]Template, 0, len(raw))
+	for _, rt := range raw {
+		if rt.Name == "" {
 			continue
 		}
-		out = append(out, t)
+		out = append(out, rt.compile())
 	}
 	return out
 }
@@ -109,58 +151,22 @@ func (s *Store) Names() []string {
 func (s *Store) All() []Template {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return append([]Template(nil), s.list...)
+	return cloneAll(s.list)
 }
 
-// Get returns the named template.
+// Get returns a deep copy of the named template.
 func (s *Store) Get(name string) (Template, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for _, t := range s.list {
 		if t.Name == name {
-			return t, true
+			return cloneTemplate(t), true
 		}
 	}
 	return Template{}, false
 }
 
-// EnabledSteps returns the ordered enabled step ids for the named template,
-// falling back to global (the shared recipe) when the template has no own steps.
-func (s *Store) EnabledSteps(name string, global func() []string) []string {
-	t, ok := s.Get(name)
-	if !ok || len(t.Steps) == 0 {
-		if global != nil {
-			return global()
-		}
-		return nil
-	}
-	out := make([]string, 0, len(t.Steps))
-	for _, st := range t.Steps {
-		if st.On {
-			out = append(out, st.ID)
-		}
-	}
-	return out
-}
-
-// StepMax returns the per-day action cap the named template sets for a step id
-// (0 = the step's built-in default). A template inheriting the global recipe has
-// no per-step caps.
-func (s *Store) StepMax(name, stepID string) int {
-	t, ok := s.Get(name)
-	if !ok {
-		return 0
-	}
-	for _, st := range t.Steps {
-		if st.ID == stepID {
-			return st.Max
-		}
-	}
-	return 0
-}
-
-// Update mutates the named template in place and persists. The mutate callback
-// receives a pointer to the stored template.
+// Update mutates the named template in place and persists.
 func (s *Store) Update(name string, mutate func(*Template)) error {
 	s.mu.Lock()
 	for i := range s.list {
@@ -174,7 +180,7 @@ func (s *Store) Update(name string, mutate func(*Template)) error {
 	return fmt.Errorf("template %q not found", name)
 }
 
-// Add appends a new template (name must be non-empty and unique) and persists.
+// Add appends a new template (non-empty, unique name) and persists.
 func (s *Store) Add(t Template) error {
 	if t.Name == "" {
 		return fmt.Errorf("template name required")
@@ -186,29 +192,25 @@ func (s *Store) Add(t Template) error {
 			return fmt.Errorf("template %q already exists", t.Name)
 		}
 	}
-	s.list = append(s.list, t)
+	s.list = append(s.list, cloneTemplate(t))
 	s.mu.Unlock()
 	return s.save()
 }
 
-// Clone copies the named template under a fresh unique name and persists,
-// returning the new name.
+// Clone copies the named template under a fresh unique name and persists.
 func (s *Store) Clone(name string) (string, error) {
 	src, ok := s.Get(name)
 	if !ok {
 		return "", fmt.Errorf("template %q not found", name)
 	}
-	dup := src
-	dup.Steps = append([]recipe.Step(nil), src.Steps...)
-	dup.Name = s.uniqueName(name + "-copy")
-	if err := s.Add(dup); err != nil {
+	src.Name = s.uniqueName(name + "-copy")
+	if err := s.Add(src); err != nil {
 		return "", err
 	}
-	return dup.Name, nil
+	return src.Name, nil
 }
 
-// Delete removes the named template and persists. Removing the last template is
-// refused so the fleet always has something to assign.
+// Delete removes the named template (refusing the last one) and persists.
 func (s *Store) Delete(name string) error {
 	s.mu.Lock()
 	if len(s.list) <= 1 {
@@ -226,9 +228,7 @@ func (s *Store) Delete(name string) error {
 	return fmt.Errorf("template %q not found", name)
 }
 
-// Rename changes a template's name (must stay unique) and persists. Per-dealer
-// assignments reference templates BY NAME, so a renamed template's dealers fall
-// back to the default until reassigned — the caller should warn.
+// Rename changes a template's name (must stay unique) and persists.
 func (s *Store) Rename(old, neu string) error {
 	if neu == "" {
 		return fmt.Errorf("name required")
@@ -253,24 +253,11 @@ func (s *Store) Rename(old, neu string) error {
 	return s.save()
 }
 
-// EnsureSteps fills a template's Steps from the default order (all on) when it has
-// none, so the editor can toggle/reorder/cap them. Persists if it changed.
-func (s *Store) EnsureSteps(name string, defaultOrder []string) error {
-	return s.Update(name, func(t *Template) {
-		if len(t.Steps) == 0 {
-			t.Steps = make([]recipe.Step, len(defaultOrder))
-			for i, id := range defaultOrder {
-				t.Steps[i] = recipe.Step{ID: id, On: true}
-			}
-		}
-	})
-}
-
 // uniqueName returns base, or base-2/base-3/… if taken. Caller holds no lock.
 func (s *Store) uniqueName(base string) string {
 	taken := map[string]bool{}
-	for _, e := range s.All() {
-		taken[e.Name] = true
+	for _, n := range s.Names() {
+		taken[n] = true
 	}
 	if !taken[base] {
 		return base
@@ -291,4 +278,17 @@ func (s *Store) save() error {
 		return err
 	}
 	return os.WriteFile(s.path, data, 0o600)
+}
+
+func cloneTemplate(t Template) Template {
+	t.Steps = append([]Step(nil), t.Steps...)
+	return t
+}
+
+func cloneAll(in []Template) []Template {
+	out := make([]Template, len(in))
+	for i, t := range in {
+		out[i] = cloneTemplate(t)
+	}
+	return out
 }

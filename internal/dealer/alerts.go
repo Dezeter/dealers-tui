@@ -14,10 +14,26 @@ const (
 	AlertCrit
 )
 
-// Alert is one fleet-wide condition worth surfacing (FR10).
+// AlertKind identifies the condition so the UI can render localized text.
+type AlertKind int
+
+const (
+	AlertJailed AlertKind = iota
+	AlertHeat
+	AlertRunway
+)
+
+// Alert is one fleet-wide condition worth surfacing (FR10). Text is the English
+// rendering (kept for tests / as a fallback); the UI localizes from Kind + the
+// structured fields.
 type Alert struct {
-	Level AlertLevel
-	Text  string
+	Level        AlertLevel
+	Kind         AlertKind
+	TokenID      uint64   // for jailed/heat
+	Heat         uint8    // for heat
+	BalanceWei   *big.Int // for runway
+	MinRunwayWei *big.Int // for runway
+	Text         string
 }
 
 // FleetAlerts derives the alert list from the latest fleet snapshots plus the
@@ -32,13 +48,16 @@ func FleetAlerts(snaps []Snapshot, balanceWei, minRunwayWei *big.Int) []Alert {
 		}
 		switch {
 		case s.State.IsJailed:
-			out = append(out, Alert{AlertCrit, fmt.Sprintf("#%d JAILED", s.TokenID)})
+			out = append(out, Alert{Level: AlertCrit, Kind: AlertJailed, TokenID: s.TokenID,
+				Text: fmt.Sprintf("#%d JAILED", s.TokenID)})
 		case s.State.HeatLevel >= 4:
-			out = append(out, Alert{AlertWarn, fmt.Sprintf("#%d heat %d/5", s.TokenID, s.State.HeatLevel)})
+			out = append(out, Alert{Level: AlertWarn, Kind: AlertHeat, TokenID: s.TokenID, Heat: s.State.HeatLevel,
+				Text: fmt.Sprintf("#%d heat %d/5", s.TokenID, s.State.HeatLevel)})
 		}
 	}
 	if balanceWei != nil && minRunwayWei != nil && minRunwayWei.Sign() > 0 && balanceWei.Cmp(minRunwayWei) < 0 {
-		out = append(out, Alert{AlertCrit, fmt.Sprintf("ETH runway low: %s < %s", EthStr(balanceWei), EthStr(minRunwayWei))})
+		out = append(out, Alert{Level: AlertCrit, Kind: AlertRunway, BalanceWei: balanceWei, MinRunwayWei: minRunwayWei,
+			Text: fmt.Sprintf("ETH runway low: %s < %s", EthStr(balanceWei), EthStr(minRunwayWei))})
 	}
 
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Level > out[j].Level })

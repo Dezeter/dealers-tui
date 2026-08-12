@@ -5,33 +5,36 @@ import (
 	"strconv"
 	"strings"
 
-	"dealers/internal/dealer"
+	"dealers/internal/i18n"
 	"dealers/internal/template"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// TemplatesModel manages the named strategy presets: a list view to create/clone/
-// delete templates, and an editor for a template's base strategy, trade route,
-// heist difficulty, mission priority, and per-template step recipe with per-step
-// daily caps. Edits persist immediately and apply to the autopilot on the next
-// tick (the strategies read the template live).
+// TemplatesModel edits the named autopilot programs. A template is an ordered list
+// of steps; each step names an action (trade / pvp / heist / clear stars /
+// breakout / heist check-in / missions) and carries that action's params plus a
+// repeat count (0 = "until done"). Three screens: the template list, a template's
+// step list, and a single step's fields. Edits persist immediately and apply to
+// the autopilot on the next tick.
 type TemplatesModel struct {
 	deps     Deps
-	mode     int // modeList | modeEdit
-	cursor   int
-	editName string // template being edited (modeEdit)
+	mode     int // modeList | modeSteps | modeStep
+	cursor   int // list index (modeList) or step index (modeSteps)
+	field    int // field index (modeStep)
+	editName string
+	stepIdx  int // step being edited (modeStep)
 	input    textinput.Model
 	editing  bool   // text input focused
-	editKind string // which row the input is editing ("name"/"drug"/"buy"/"sell"/"max")
-	editStep int    // step index when editKind=="max"
+	editKind string // field under text edit ("name"/"drug"/"buy"/"sell"/"count")
 	notice   string
 }
 
 const (
 	modeList = iota
-	modeEdit
+	modeSteps
+	modeStep
 )
 
 func NewTemplates(deps Deps) TemplatesModel {
@@ -43,7 +46,6 @@ func NewTemplates(deps Deps) TemplatesModel {
 
 func (m TemplatesModel) Init() tea.Cmd { return nil }
 
-// names returns the current template names.
 func (m TemplatesModel) names() []string {
 	if m.deps.Templates == nil {
 		return nil
@@ -59,13 +61,17 @@ func (m TemplatesModel) Update(msg tea.Msg) (TemplatesModel, tea.Cmd) {
 	if m.editing {
 		return m.updateEditing(key)
 	}
-	if m.mode == modeList {
+	switch m.mode {
+	case modeList:
 		return m.updateList(key)
+	case modeSteps:
+		return m.updateSteps(key)
+	default:
+		return m.updateStep(key)
 	}
-	return m.updateEdit(key)
 }
 
-// ---- list mode ----
+// ---- template list ----
 
 func (m TemplatesModel) updateList(key tea.KeyMsg) (TemplatesModel, tea.Cmd) {
 	names := m.names()
@@ -83,31 +89,30 @@ func (m TemplatesModel) updateList(key tea.KeyMsg) (TemplatesModel, tea.Cmd) {
 		}
 	case "enter":
 		if n > 0 {
-			m.editName = names[m.cursor]
-			m.mode, m.cursor = modeEdit, 0
+			m.editName, m.mode, m.cursor = names[m.cursor], modeSteps, 0
 		}
-	case "n": // new blank template → jump straight into editing it
-		t := withUniqueName(m.deps.Templates, template.Template{Name: "template", Strategy: "pve", Params: template.Params{HeistDifficulty: -1}})
+	case "n":
+		t := withUniqueName(m.deps.Templates, template.Template{Name: "template"})
 		if err := m.deps.Templates.Add(t); err != nil {
-			m.notice = errStyle.Render("create failed: " + err.Error())
+			m.notice = errStyle.Render(i18n.T("templates.create_failed") + ": " + err.Error())
 		} else {
-			m.editName, m.mode, m.cursor, m.notice = t.Name, modeEdit, 0, ""
+			m.editName, m.mode, m.cursor, m.notice = t.Name, modeSteps, 0, ""
 		}
-	case "c": // clone selected
+	case "c":
 		if n > 0 {
 			if nm, err := m.deps.Templates.Clone(names[m.cursor]); err != nil {
-				m.notice = errStyle.Render("clone failed: " + err.Error())
+				m.notice = errStyle.Render(i18n.T("templates.clone_failed") + ": " + err.Error())
 			} else {
-				m.notice = okStyle.Render("cloned → " + nm)
+				m.notice = okStyle.Render(i18n.T("templates.cloned", nm))
 			}
 		}
-	case "d": // delete selected
+	case "d":
 		if n > 0 {
 			nm := names[m.cursor]
 			if err := m.deps.Templates.Delete(nm); err != nil {
 				m.notice = errStyle.Render(err.Error())
 			} else {
-				m.notice = statusBarStyle.Render("deleted " + nm)
+				m.notice = statusBarStyle.Render(i18n.T("templates.deleted", nm))
 				if m.cursor >= n-1 && m.cursor > 0 {
 					m.cursor--
 				}
@@ -136,137 +141,169 @@ func withUniqueName(s *template.Store, t template.Template) template.Template {
 	}
 }
 
-// ---- edit mode ----
+// ---- step list ----
 
-// editRow is one navigable line of the editor.
-type editRow struct {
-	kind    string // name|strategy|drug|buy|sell|heist|mission|stepsToggle|step
-	stepIdx int
-}
-
-func editRows(t template.Template) []editRow {
-	rows := []editRow{
-		{kind: "name"}, {kind: "strategy"}, {kind: "drug"},
-		{kind: "buy"}, {kind: "sell"}, {kind: "heist"}, {kind: "mission"},
-	}
-	if len(t.Steps) == 0 {
-		rows = append(rows, editRow{kind: "stepsToggle"})
-	} else {
-		for i := range t.Steps {
-			rows = append(rows, editRow{kind: "step", stepIdx: i})
-		}
-	}
-	return rows
-}
-
-func (m TemplatesModel) updateEdit(key tea.KeyMsg) (TemplatesModel, tea.Cmd) {
+func (m TemplatesModel) updateSteps(key tea.KeyMsg) (TemplatesModel, tea.Cmd) {
 	t, ok := m.deps.Templates.Get(m.editName)
 	if !ok {
 		m.mode = modeList
 		return m, nil
 	}
-	rows := editRows(t)
-	n := len(rows)
+	n := len(t.Steps)
 	switch key.String() {
 	case "esc":
 		m.mode, m.cursor = modeList, 0
-		return m, nil
 	case "up", "k":
-		m.cursor = (m.cursor - 1 + n) % n
-		return m, nil
+		if n > 0 {
+			m.cursor = (m.cursor - 1 + n) % n
+		}
 	case "down", "j":
-		m.cursor = (m.cursor + 1) % n
-		return m, nil
-	}
-	row := rows[m.cursor]
-	switch row.kind {
-	case "name":
-		if key.String() == "enter" {
-			return m.startEditing("name", 0, m.editName)
+		if n > 0 {
+			m.cursor = (m.cursor + 1) % n
 		}
-	case "drug":
-		if key.String() == "enter" {
-			return m.startEditing("drug", 0, t.Params.Drug)
-		}
-	case "buy":
-		if key.String() == "enter" {
-			return m.startEditing("buy", 0, t.Params.BuyArea)
-		}
-	case "sell":
-		if key.String() == "enter" {
-			return m.startEditing("sell", 0, t.Params.SellArea)
-		}
-	case "strategy":
-		if isCycleKey(key) {
-			m.persist(func(x *template.Template) { x.Strategy = nextStrategy(x.Strategy) })
-		}
-	case "heist":
-		if isCycleKey(key) {
-			m.persist(func(x *template.Template) { x.Params.HeistDifficulty = nextDiff(x.Params.HeistDifficulty) })
-		}
-	case "mission":
-		if isCycleKey(key) {
-			m.persist(func(x *template.Template) {
-				if x.Params.MissionPriority == "weekly" {
-					x.Params.MissionPriority = "daily"
-				} else {
-					x.Params.MissionPriority = "weekly"
-				}
-			})
-		}
-	case "stepsToggle":
-		if key.String() == " " || key.String() == "enter" {
-			if err := m.deps.Templates.EnsureSteps(m.editName, dealer.DefaultStepOrder()); err != nil {
-				m.notice = errStyle.Render(err.Error())
-			} else {
-				m.notice = okStyle.Render("steps customised — this template no longer inherits the global recipe")
-			}
-		}
-	case "step":
-		return m.updateStepRow(key, row.stepIdx, len(t.Steps))
-	}
-	return m, nil
-}
-
-func (m TemplatesModel) updateStepRow(key tea.KeyMsg, idx, count int) (TemplatesModel, tea.Cmd) {
-	switch key.String() {
-	case " ", "x":
+	case "a": // add a step (defaults to trade) and edit it
 		m.persist(func(x *template.Template) {
-			if idx < len(x.Steps) {
-				x.Steps[idx].On = !x.Steps[idx].On
-			}
+			x.Steps = append(x.Steps, template.Step{Action: template.ActionTrade})
 		})
-	case "[", "-", "K": // move up
-		if idx > 0 {
+		if t2, ok := m.deps.Templates.Get(m.editName); ok {
+			m.stepIdx, m.mode, m.field = len(t2.Steps)-1, modeStep, 0
+		}
+	case "enter":
+		if n > 0 {
+			m.stepIdx, m.mode, m.field = m.cursor, modeStep, 0
+		}
+	case "d":
+		if n > 0 {
+			idx := m.cursor
+			m.persist(func(x *template.Template) {
+				x.Steps = append(x.Steps[:idx], x.Steps[idx+1:]...)
+			})
+			if m.cursor >= n-1 && m.cursor > 0 {
+				m.cursor--
+			}
+		}
+	case "[", "-", "K":
+		if m.cursor > 0 {
+			idx := m.cursor
 			m.persist(func(x *template.Template) { x.Steps[idx-1], x.Steps[idx] = x.Steps[idx], x.Steps[idx-1] })
 			m.cursor--
 		}
-	case "]", "+", "J": // move down
-		if idx < count-1 {
+	case "]", "+", "J":
+		if m.cursor < n-1 {
+			idx := m.cursor
 			m.persist(func(x *template.Template) { x.Steps[idx+1], x.Steps[idx] = x.Steps[idx], x.Steps[idx+1] })
 			m.cursor++
 		}
-	case "m", "enter": // edit the per-day cap
-		cur := ""
-		if t, ok := m.deps.Templates.Get(m.editName); ok && idx < len(t.Steps) && t.Steps[idx].Max > 0 {
-			cur = strconv.Itoa(t.Steps[idx].Max)
-		}
-		return m.startEditing("max", idx, cur)
-	case "r": // reset steps → inherit global again
-		m.persist(func(x *template.Template) { x.Steps = nil })
-		m.cursor = 7 // back to the steps toggle row
+	case "r": // rename the template
+		return m.startEditing("name", m.editName)
 	}
 	return m, nil
 }
 
-// startEditing focuses the shared input, prefilled, to edit a text/number field.
-func (m TemplatesModel) startEditing(kind string, stepIdx int, cur string) (TemplatesModel, tea.Cmd) {
-	m.editing, m.editKind, m.editStep = true, kind, stepIdx
+// ---- single step ----
+
+// stepFields returns the editable field ids for a step, by action.
+func stepFields(s template.Step) []string {
+	f := []string{"action"}
+	switch {
+	case template.UsesTradeParams(s.Action):
+		f = append(f, "drug", "buy", "sell")
+	case template.UsesHeistParams(s.Action):
+		f = append(f, "difficulty")
+	case template.UsesHeatParam(s.Action):
+		f = append(f, "heat_at")
+	case template.UsesBailParam(s.Action):
+		f = append(f, "pay_bail")
+	}
+	return append(f, "count")
+}
+
+func (m TemplatesModel) step() (template.Step, bool) {
+	t, ok := m.deps.Templates.Get(m.editName)
+	if !ok || m.stepIdx < 0 || m.stepIdx >= len(t.Steps) {
+		return template.Step{}, false
+	}
+	return t.Steps[m.stepIdx], true
+}
+
+func (m TemplatesModel) updateStep(key tea.KeyMsg) (TemplatesModel, tea.Cmd) {
+	s, ok := m.step()
+	if !ok {
+		m.mode, m.cursor = modeSteps, 0
+		return m, nil
+	}
+	fields := stepFields(s)
+	nf := len(fields)
+	switch key.String() {
+	case "esc":
+		m.mode = modeSteps
+		return m, nil
+	case "up", "k":
+		m.field = (m.field - 1 + nf) % nf
+		return m, nil
+	case "down", "j":
+		m.field = (m.field + 1) % nf
+		return m, nil
+	}
+	idx := m.stepIdx
+	switch fields[m.field] {
+	case "action":
+		if isCycleKey(key) {
+			m.persistStep(idx, func(x *template.Step) { x.Action = nextAction(x.Action) })
+			m.field = 0 // field set changes with the action
+		}
+	case "difficulty":
+		if isCycleKey(key) {
+			m.persistStep(idx, func(x *template.Step) { x.HeistDifficulty = nextDiff8(x.HeistDifficulty) })
+		}
+	case "pay_bail":
+		if isCycleKey(key) {
+			m.persistStep(idx, func(x *template.Step) { x.PayBail = !x.PayBail })
+		}
+	case "heat_at":
+		if key.String() == "enter" {
+			cur := ""
+			if s.HeatAt > 0 {
+				cur = strconv.Itoa(int(s.HeatAt))
+			}
+			return m.startEditing("heat_at", cur)
+		}
+	case "drug":
+		if key.String() == "enter" {
+			return m.startEditing("drug", s.Drug)
+		}
+	case "buy":
+		if key.String() == "enter" {
+			return m.startEditing("buy", s.BuyArea)
+		}
+	case "sell":
+		if key.String() == "enter" {
+			return m.startEditing("sell", s.SellArea)
+		}
+	case "count":
+		if key.String() == "enter" {
+			cur := ""
+			if s.Count > 0 {
+				cur = strconv.Itoa(s.Count)
+			}
+			return m.startEditing("count", cur)
+		}
+	}
+	return m, nil
+}
+
+// ---- text editing ----
+
+func (m TemplatesModel) startEditing(kind, cur string) (TemplatesModel, tea.Cmd) {
+	m.editing, m.editKind = true, kind
 	m.input.SetValue(cur)
 	m.input.CursorEnd()
-	if kind == "max" {
-		m.input.Placeholder = "0 = no limit"
-	} else {
+	switch kind {
+	case "count":
+		m.input.Placeholder = i18n.T("templates.count_placeholder")
+	case "heat_at":
+		m.input.Placeholder = i18n.T("templates.heat_placeholder")
+	default:
 		m.input.Placeholder = ""
 	}
 	return m, m.input.Focus()
@@ -301,35 +338,46 @@ func (m *TemplatesModel) commitEditing() {
 			return
 		}
 		m.editName = val
-		m.notice = okStyle.Render("renamed — reassign dealers to it with s (old assignments fall back to default)")
+		m.notice = okStyle.Render(i18n.T("templates.renamed"))
 	case "drug":
-		m.persist(func(x *template.Template) { x.Params.Drug = val })
+		m.persistStep(m.stepIdx, func(x *template.Step) { x.Drug = val })
 	case "buy":
-		m.persist(func(x *template.Template) { x.Params.BuyArea = val })
+		m.persistStep(m.stepIdx, func(x *template.Step) { x.BuyArea = val })
 	case "sell":
-		m.persist(func(x *template.Template) { x.Params.SellArea = val })
-	case "max":
+		m.persistStep(m.stepIdx, func(x *template.Step) { x.SellArea = val })
+	case "count":
 		n, err := strconv.Atoi(val)
 		if val == "" {
 			n = 0
 		} else if err != nil || n < 0 {
-			m.notice = errStyle.Render("cap must be a number ≥ 0")
+			m.notice = errStyle.Render(i18n.T("templates.count_invalid"))
 			return
 		}
-		idx := m.editStep
-		m.persist(func(x *template.Template) {
-			if idx < len(x.Steps) {
-				x.Steps[idx].Max = n
-			}
-		})
+		m.persistStep(m.stepIdx, func(x *template.Step) { x.Count = n })
+	case "heat_at":
+		n, err := strconv.Atoi(val)
+		if val == "" {
+			n = 0
+		} else if err != nil || n < 0 || n > 5 {
+			m.notice = errStyle.Render(i18n.T("templates.heat_invalid"))
+			return
+		}
+		m.persistStep(m.stepIdx, func(x *template.Step) { x.HeatAt = int8(n) })
 	}
 }
 
-// persist applies mutate to the edited template and records any save error.
 func (m *TemplatesModel) persist(mutate func(*template.Template)) {
 	if err := m.deps.Templates.Update(m.editName, mutate); err != nil {
-		m.notice = errStyle.Render("save failed: " + err.Error())
+		m.notice = errStyle.Render(i18n.T("common.save_failed") + ": " + err.Error())
 	}
+}
+
+func (m *TemplatesModel) persistStep(idx int, mutate func(*template.Step)) {
+	m.persist(func(t *template.Template) {
+		if idx >= 0 && idx < len(t.Steps) {
+			mutate(&t.Steps[idx])
+		}
+	})
 }
 
 func isCycleKey(key tea.KeyMsg) bool {
@@ -340,18 +388,17 @@ func isCycleKey(key tea.KeyMsg) bool {
 	return false
 }
 
-func nextStrategy(s string) string {
-	switch s {
-	case "pve":
-		return "pvp"
-	case "pvp":
-		return "manual"
-	default:
-		return "pve"
+func nextAction(a string) string {
+	order := template.ActionOrder
+	for i, x := range order {
+		if x == a {
+			return order[(i+1)%len(order)]
+		}
 	}
+	return order[0]
 }
 
-func nextDiff(d int) int {
+func nextDiff8(d int8) int8 {
 	if d < 0 {
 		return 0
 	}
@@ -361,191 +408,204 @@ func nextDiff(d int) int {
 	return d + 1
 }
 
-func diffLabel(d int) string {
+func diffLabel8(d int8) string {
 	if d < 0 {
-		return "auto (max affordable)"
+		return i18n.T("templates.diff_auto")
 	}
-	return strconv.Itoa(d)
+	return strconv.Itoa(int(d))
 }
 
-func missionLabelFor(p string) string {
-	if p == "weekly" {
-		return "weekly-first"
+// heatAtValue is the effective clear-stars threshold (0 = the default 3).
+func heatAtValue(h int8) int {
+	if h <= 0 {
+		return 3
 	}
-	return "daily-first"
+	return int(h)
+}
+
+// heatAtLabel renders the threshold, marking the default.
+func heatAtLabel(h int8) string {
+	if h <= 0 {
+		return i18n.T("templates.heat_default")
+	}
+	return strconv.Itoa(int(h)) + "★"
+}
+
+func boolLabel(v bool) string {
+	if v {
+		return i18n.T("templates.yes")
+	}
+	return i18n.T("templates.no")
+}
+
+func actionLabel(action string) string {
+	return i18n.T("templates.act_" + action)
+}
+
+// countLabel renders a step's repeat count: "×N" or "до успеха" for 0.
+func countLabel(count int) string {
+	if count > 0 {
+		return fmt.Sprintf("×%d", count)
+	}
+	return i18n.T("templates.until_done")
 }
 
 // ---- view ----
 
 func (m TemplatesModel) View() string {
 	if m.deps.Templates == nil {
-		return titleStyle.Render("TEMPLATES") + "\n\n" + helpStyle.Render("unavailable")
+		return titleStyle.Render(i18n.T("templates.title")) + "\n\n" + helpStyle.Render(i18n.T("common.unavailable"))
 	}
-	if m.mode == modeList {
+	switch m.mode {
+	case modeList:
 		return m.viewList()
+	case modeSteps:
+		return m.viewSteps()
+	default:
+		return m.viewStep()
 	}
-	return m.viewEdit()
 }
 
 func (m TemplatesModel) viewList() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("STRATEGY TEMPLATES") + "\n")
-	b.WriteString(helpStyle.Render("named presets assigned per-NFT (cycle with s on the fleet); autopilot reads them live") + "\n\n")
+	b.WriteString(titleStyle.Render(i18n.T("templates.list_title")) + "\n")
+	b.WriteString(helpStyle.Render(i18n.T("templates.subtitle")) + "\n\n")
 	for i, t := range m.deps.Templates.All() {
-		cursor := "  "
-		name := t.Name
+		cursor, name := "  ", t.Name
 		if i == m.cursor {
-			cursor = focusStyle.Render("▸ ")
-			name = focusStyle.Render(name)
+			cursor, name = focusStyle.Render("▸ "), focusStyle.Render(name)
 		}
-		fmt.Fprintf(&b, "%s%s  %s\n", cursor, name, helpStyle.Render(summarize(t)))
+		fmt.Fprintf(&b, "%s%s  %s\n", cursor, name, helpStyle.Render(i18n.T("templates.steps_count", len(t.Steps))))
 	}
 	if m.notice != "" {
 		b.WriteString("\n" + m.notice + "\n")
 	}
-	b.WriteString("\n" + helpStyle.Render("↑/↓ · enter edit · n new · c clone · d delete · esc back"))
+	b.WriteString("\n" + helpStyle.Render(i18n.T("templates.list_hint")))
 	return b.String()
 }
 
-// summarize renders a one-line preview of a template.
-func summarize(t template.Template) string {
-	if t.Strategy == "manual" {
-		return "manual — does nothing"
-	}
-	route := "weed Manhattan→Amsterdam"
-	if t.Params.Drug != "" || t.Params.BuyArea != "" || t.Params.SellArea != "" {
-		drug := t.Params.Drug
-		if drug == "" {
-			drug = "weed"
-		}
-		buy, sell := t.Params.BuyArea, t.Params.SellArea
-		if buy == "" {
-			buy = "Manhattan"
-		}
-		if sell == "" {
-			sell = "Amsterdam"
-		}
-		route = fmt.Sprintf("%s %s→%s", drug, buy, sell)
-	}
-	steps := "inherits global steps"
-	if len(t.Steps) > 0 {
-		steps = fmt.Sprintf("%d custom steps", len(t.Steps))
-	}
-	return fmt.Sprintf("%s · %s · heist %s · %s · %s",
-		t.Strategy, route, diffLabel(t.Params.HeistDifficulty), missionLabelFor(t.Params.MissionPriority), steps)
-}
-
-func (m TemplatesModel) viewEdit() string {
+func (m TemplatesModel) viewSteps() string {
 	t, ok := m.deps.Templates.Get(m.editName)
 	if !ok {
-		return titleStyle.Render("TEMPLATE") + "\n\n" + helpStyle.Render("gone — esc back")
+		return titleStyle.Render(i18n.T("templates.edit_title")) + "\n\n" + helpStyle.Render(i18n.T("templates.gone"))
 	}
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("TEMPLATE · "+t.Name) + "\n")
-	b.WriteString(helpStyle.Render("↑/↓ move · enter edit/cycle a field · esc back · changes apply live") + "\n\n")
-
-	rows := editRows(t)
-	for i, row := range rows {
-		b.WriteString(m.renderRow(i, row, t) + "\n")
+	b.WriteString(titleStyle.Render(i18n.T("templates.edit_title")+" · "+t.Name) + "\n")
+	b.WriteString(helpStyle.Render(i18n.T("templates.steps_hint")) + "\n\n")
+	if m.editing && m.editKind == "name" {
+		b.WriteString(i18n.T("templates.f_name") + ": " + m.input.View() + "\n\n")
+	}
+	if len(t.Steps) == 0 {
+		b.WriteString(helpStyle.Render(i18n.T("templates.no_steps")) + "\n")
+	}
+	for i, s := range t.Steps {
+		cursor := "  "
+		if i == m.cursor {
+			cursor = focusStyle.Render("▸ ")
+		}
+		num := helpStyle.Render(fmt.Sprintf("%d.", i+1))
+		fmt.Fprintf(&b, "%s%s %s\n", cursor, num, m.stepSummary(s, i == m.cursor))
 	}
 	if m.notice != "" {
 		b.WriteString("\n" + m.notice + "\n")
 	}
-	b.WriteString("\n" + helpStyle.Render(m.editHelp(rows)))
 	return b.String()
 }
 
-func (m TemplatesModel) renderRow(i int, row editRow, t template.Template) string {
-	sel := i == m.cursor
+// stepSummary renders one step line: action · params · count.
+func (m TemplatesModel) stepSummary(s template.Step, sel bool) string {
+	label := actionLabel(s.Action)
+	if sel {
+		label = focusStyle.Render(label)
+	}
+	detail := ""
+	switch {
+	case template.UsesTradeParams(s.Action):
+		detail = orDim(s.Drug, "weed") + " " + orDim(s.BuyArea, "Manhattan") + "→" + orDim(s.SellArea, "Amsterdam")
+	case template.UsesHeistParams(s.Action):
+		detail = i18n.T("templates.f_heist") + " " + diffLabel8(s.HeistDifficulty)
+	case template.UsesHeatParam(s.Action):
+		detail = i18n.T("templates.at_stars", heatAtValue(s.HeatAt))
+	case template.UsesBailParam(s.Action):
+		if s.PayBail {
+			detail = i18n.T("templates.with_bail")
+		}
+	}
+	return fmt.Sprintf("%-18s %s   %s", label, detail, helpStyle.Render(countLabel(s.Count)))
+}
+
+func (m TemplatesModel) viewStep() string {
+	s, ok := m.step()
+	if !ok {
+		return titleStyle.Render(i18n.T("templates.edit_title")) + "\n\n" + helpStyle.Render(i18n.T("templates.gone"))
+	}
+	var b strings.Builder
+	b.WriteString(titleStyle.Render(fmt.Sprintf("%s %d · %s", i18n.T("templates.step_word"), m.stepIdx+1, actionLabel(s.Action))) + "\n")
+	b.WriteString(helpStyle.Render(i18n.T("templates.step_hint")) + "\n\n")
+
+	fields := stepFields(s)
+	for i, f := range fields {
+		b.WriteString(m.renderField(i, f, s) + "\n")
+	}
+	if m.notice != "" {
+		b.WriteString("\n" + m.notice + "\n")
+	}
+	return b.String()
+}
+
+func (m TemplatesModel) renderField(i int, field string, s template.Step) string {
+	sel := i == m.field
 	cur := "  "
 	if sel {
 		cur = focusStyle.Render("▸ ")
 	}
-	label := func(name, val string) string {
-		l := fmt.Sprintf("%-16s %s", name, val)
+	row := func(name, val string) string {
 		if sel {
-			l = focusStyle.Render(fmt.Sprintf("%-16s ", name)) + val
+			return cur + focusStyle.Render(fmt.Sprintf("%-16s ", name)) + val
 		}
-		return cur + l
+		return cur + fmt.Sprintf("%-16s %s", name, val)
 	}
-	// While editing a text field, show the input inline for that row.
 	editingThis := m.editing && sel
-	inputView := m.input.View()
-
-	switch row.kind {
-	case "name":
-		if editingThis {
-			return label("name", inputView)
-		}
-		return label("name", t.Name)
-	case "strategy":
-		return label("strategy", t.Strategy+helpStyle.Render("  (space cycles pve/pvp/manual)"))
+	switch field {
+	case "action":
+		return row(i18n.T("templates.f_action"), actionLabel(s.Action)+helpStyle.Render("  "+i18n.T("templates.action_hint")))
 	case "drug":
 		if editingThis {
-			return label("drug", inputView)
+			return row(i18n.T("templates.f_drug"), m.input.View())
 		}
-		return label("drug", orDim(t.Params.Drug, "weed"))
+		return row(i18n.T("templates.f_drug"), orDim(s.Drug, "weed"))
 	case "buy":
 		if editingThis {
-			return label("buy zone", inputView)
+			return row(i18n.T("templates.f_buy"), m.input.View())
 		}
-		return label("buy zone", orDim(t.Params.BuyArea, "Manhattan"))
+		return row(i18n.T("templates.f_buy"), orDim(s.BuyArea, "Manhattan"))
 	case "sell":
 		if editingThis {
-			return label("sell zone", inputView)
+			return row(i18n.T("templates.f_sell"), m.input.View())
 		}
-		return label("sell zone", orDim(t.Params.SellArea, "Amsterdam"))
-	case "heist":
-		return label("heist difficulty", diffLabel(t.Params.HeistDifficulty))
-	case "mission":
-		return label("mission priority", missionLabelFor(t.Params.MissionPriority))
-	case "stepsToggle":
-		return cur + helpStyle.Render("steps: inherits the global recipe — space to customise")
-	case "step":
-		return cur + m.renderStep(row.stepIdx, t, sel, editingThis, inputView)
+		return row(i18n.T("templates.f_sell"), orDim(s.SellArea, "Amsterdam"))
+	case "difficulty":
+		return row(i18n.T("templates.f_heist"), diffLabel8(s.HeistDifficulty))
+	case "heat_at":
+		if editingThis {
+			return row(i18n.T("templates.f_heat_at"), m.input.View())
+		}
+		return row(i18n.T("templates.f_heat_at"), heatAtLabel(s.HeatAt)+helpStyle.Render("  "+i18n.T("templates.heat_hint")))
+	case "pay_bail":
+		return row(i18n.T("templates.f_pay_bail"), boolLabel(s.PayBail))
+	case "count":
+		if editingThis {
+			return row(i18n.T("templates.f_count"), m.input.View())
+		}
+		return row(i18n.T("templates.f_count"), countLabel(s.Count)+helpStyle.Render("  "+i18n.T("templates.count_hint")))
 	}
 	return ""
-}
-
-func (m TemplatesModel) renderStep(idx int, t template.Template, sel, editingThis bool, inputView string) string {
-	if idx >= len(t.Steps) {
-		return ""
-	}
-	st := t.Steps[idx]
-	box := helpStyle.Render("[ ]")
-	if st.On {
-		box = okStyle.Render("[x]")
-	}
-	name := stepMeta(st.ID).Label
-	if !st.On {
-		name = helpStyle.Render(name)
-	} else if sel {
-		name = focusStyle.Render(name)
-	}
-	cap := "no limit"
-	if st.Max > 0 {
-		cap = fmt.Sprintf("%d/day", st.Max)
-	}
-	if editingThis {
-		cap = inputView
-	}
-	return fmt.Sprintf("%s %s  %s", box, name, helpStyle.Render("cap: ")+cap)
-}
-
-func (m TemplatesModel) editHelp(rows []editRow) string {
-	if m.editing {
-		return "type · enter save · esc cancel"
-	}
-	if m.cursor < len(rows) && rows[m.cursor].kind == "step" {
-		return "space toggle · [ ] move · m set daily cap · r reset to global · esc back"
-	}
-	return "enter edit/cycle · esc back"
 }
 
 // orDim shows val, or a dimmed default when val is empty.
 func orDim(val, def string) string {
 	if val == "" {
-		return helpStyle.Render(def + " (default)")
+		return helpStyle.Render(i18n.T("templates.default_suffix", def))
 	}
 	return val
 }

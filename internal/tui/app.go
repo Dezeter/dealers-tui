@@ -10,7 +10,7 @@ import (
 	"dealers/internal/autostrat"
 	"dealers/internal/chain/bindings"
 	"dealers/internal/dealer"
-	"dealers/internal/recipe"
+	"dealers/internal/i18n"
 	"dealers/internal/settings"
 	"dealers/internal/store"
 	"dealers/internal/template"
@@ -55,8 +55,10 @@ type Deps struct {
 	// Settings holds UI-managed global toggles (e.g. auto-pay bail); nil = none.
 	Settings *settings.Store
 
-	// Recipe is the UI-editable autopilot step order (global fallback); nil = none.
-	Recipe *recipe.Store
+	// Lang is the UI-managed language store (language.json); nil = none. The
+	// active language is a process-global in i18n, so this is only needed to
+	// switch/persist it from the Settings screen.
+	Lang *i18n.Store
 
 	// Templates is the named-preset store (per-NFT strategy templates); nil = none.
 	Templates *template.Store
@@ -151,7 +153,6 @@ const (
 	screenAllies
 	screenMissions
 	screenSettings
-	screenSteps
 	screenTemplates
 )
 
@@ -166,7 +167,6 @@ type App struct {
 	allies   AlliesModel
 	missions MissionsModel
 	settings SettingsModel
-	steps    StepsModel
 	tmpls    TemplatesModel
 	alerts   []dealer.Alert
 	balance  *big.Int
@@ -260,10 +260,6 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case screenSettings:
 			var cmd tea.Cmd
 			a.settings, cmd = a.settings.Update(msg)
-			return a, cmd
-		case screenSteps:
-			var cmd tea.Cmd
-			a.steps, cmd = a.steps.Update(msg)
 			return a, cmd
 		case screenTemplates:
 			var cmd tea.Cmd
@@ -371,15 +367,10 @@ func (a App) updateFleetKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		a.settings = NewSettings(a.deps)
 		a.screen = screenSettings
 		return a, a.settings.Init()
-	case "e":
-		// Autopilot step editor (global recipe order/enable).
-		a.steps = NewSteps(a.deps)
-		a.screen = screenSteps
-		return a, a.steps.Init()
 	case "t":
-		// Strategy templates (named presets: base strategy + steps + params).
+		// Strategy templates (per-NFT step programs).
 		if a.deps.Templates == nil {
-			a.fleet.notice = errStyle.Render("read-only — templates unavailable")
+			a.fleet.notice = errStyle.Render(i18n.T("fleet.notice.ro_templates"))
 			return a, nil
 		}
 		a.tmpls = NewTemplates(a.deps)
@@ -388,15 +379,15 @@ func (a App) updateFleetKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "c":
 		// Daily check-in for the whole fleet (gas only; skips jailed / already-done).
 		if a.deps.Manager == nil {
-			a.fleet.notice = errStyle.Render("read-only — no signer configured for check-in")
+			a.fleet.notice = errStyle.Render(i18n.T("fleet.notice.ro_checkin"))
 			return a, nil
 		}
-		a.fleet.notice = statusBarStyle.Render("checking in…")
+		a.fleet.notice = statusBarStyle.Render(i18n.T("fleet.notice.checking_in"))
 		return a, checkInAllCmd(a.deps, a.fleet.snaps)
 	case "s":
 		// Cycle the selected dealer's autopilot strategy (farm→pve→pvp→manual).
 		if a.deps.Strategies == nil {
-			a.fleet.notice = errStyle.Render("read-only — autopilot strategy unavailable")
+			a.fleet.notice = errStyle.Render(i18n.T("fleet.notice.ro_strategy"))
 			return a, nil
 		}
 		tid := a.fleet.SelectedTokenID()
@@ -405,10 +396,10 @@ func (a App) updateFleetKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		next, err := a.deps.Strategies.Cycle(tid)
 		if err != nil {
-			a.fleet.notice = errStyle.Render("strategy save failed: " + err.Error())
+			a.fleet.notice = errStyle.Render(i18n.T("fleet.notice.strategy_save_failed") + ": " + err.Error())
 			return a, nil
 		}
-		a.fleet.notice = okStyle.Render(fmt.Sprintf("#%d strategy → %s", tid, next))
+		a.fleet.notice = okStyle.Render(i18n.T("fleet.notice.strategy_set", tid, next))
 		return a, nil
 	case "A":
 		// Toggle the autopilot (capital A to avoid an accidental spend).
@@ -466,8 +457,6 @@ func (a App) View() string {
 		body = a.missions.View()
 	case screenSettings:
 		body = a.settings.View()
-	case screenSteps:
-		body = a.steps.View()
 	case screenTemplates:
 		body = a.tmpls.View()
 	default:
@@ -481,11 +470,11 @@ func (a App) View() string {
 func (a App) walletLine() string {
 	s := ""
 	if a.balance != nil {
-		s = "bal " + dealer.EthStr(a.balance)
+		s = i18n.T("header.bal", dealer.EthStr(a.balance))
 	}
 	if a.deps.SpentFn != nil {
 		if spent := a.deps.SpentFn(); spent != nil && spent.Sign() > 0 {
-			s += "  spent " + dealer.EthStr(spent)
+			s += "  " + i18n.T("header.spent", dealer.EthStr(spent))
 		}
 	}
 	return s
@@ -502,9 +491,9 @@ func (a App) updateBar() string {
 	if a.update.url != "" {
 		ver = osc8(a.update.url, a.update.latest)
 	}
-	line := updateNoticeStyle.Render(" ⬆ update available: " + ver + " ")
+	line := updateNoticeStyle.Render(i18n.T("update.bar", ver))
 	if a.deps.Version != "" {
-		line += helpStyle.Render(" (you have " + a.deps.Version + ")")
+		line += helpStyle.Render(i18n.T("update.have", a.deps.Version))
 	}
 	return line
 }
@@ -520,9 +509,23 @@ func (a App) alertBar() string {
 		if al.Level == dealer.AlertCrit {
 			st = alertCritStyle
 		}
-		chips = append(chips, st.Render(" "+al.Text+" "))
+		chips = append(chips, st.Render(" "+alertText(al)+" "))
 	}
 	return lipgloss.JoinHorizontal(lipgloss.Left, chips...)
+}
+
+// alertText renders a fleet alert in the active language (falling back to the
+// alert's own English Text for any unmapped kind).
+func alertText(al dealer.Alert) string {
+	switch al.Kind {
+	case dealer.AlertJailed:
+		return i18n.T("alert.jailed", al.TokenID)
+	case dealer.AlertHeat:
+		return i18n.T("alert.heat", al.TokenID, al.Heat)
+	case dealer.AlertRunway:
+		return i18n.T("alert.runway", dealer.EthStr(al.BalanceWei), dealer.EthStr(al.MinRunwayWei))
+	}
+	return al.Text
 }
 
 // autopilotChip renders the AUTO ON/OFF indicator (empty in read-only).
@@ -531,24 +534,27 @@ func (a App) autopilotChip() string {
 		return ""
 	}
 	tag := a.deps.strategyChip()
+	if tag == "mixed" {
+		tag = i18n.T("auto.mixed")
+	}
 	if a.deps.AutopilotOn() {
-		s := " AUTO ON "
+		s := i18n.T("auto.on")
 		if tag != "" {
-			s = " AUTO:" + tag + " ON "
+			s = i18n.T("auto.on_tagged", tag)
 		}
 		return alertCritStyle.Render(s)
 	}
 	if tag != "" {
-		return statusBarStyle.Render("auto:" + tag + " off")
+		return statusBarStyle.Render(i18n.T("auto.off_tagged", tag))
 	}
-	return statusBarStyle.Render("auto off")
+	return statusBarStyle.Render(i18n.T("auto.off"))
 }
 
 func autopilotNotice(on bool) string {
 	if on {
-		return alertCritStyle.Render(" AUTOPILOT ON ") + errStyle.Render(" — acting on its own, spending energy/cash")
+		return alertCritStyle.Render(i18n.T("auto.notice_on")) + errStyle.Render(i18n.T("auto.notice_on_tail"))
 	}
-	return okStyle.Render("autopilot off")
+	return okStyle.Render(i18n.T("auto.notice_off"))
 }
 
 // dezeterURL is the author's Abstract portal profile, linked from the title.

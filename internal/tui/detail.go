@@ -10,6 +10,7 @@ import (
 
 	"dealers/internal/chain/bindings"
 	"dealers/internal/dealer"
+	"dealers/internal/i18n"
 	"dealers/internal/store"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -163,16 +164,16 @@ func (m DetailModel) Update(msg tea.Msg) (DetailModel, tea.Cmd) {
 		m.submitting = false
 		m.formOpen = false
 		if msg.err != nil {
-			m.notice = errStyle.Render("submit failed: " + msg.err.Error())
+			m.notice = errStyle.Render(i18n.T("detail.submit_failed", msg.err.Error()))
 		} else {
-			m.notice = okStyle.Render(fmt.Sprintf("committed seq=%d — resolving in background…", msg.seq))
+			m.notice = okStyle.Render(i18n.T("detail.committed_seq", msg.seq))
 		}
 		return m, m.Refresh()
 
 	case actionDoneMsg:
 		m.submitting = false
 		if msg.err != nil {
-			m.notice = errStyle.Render(msg.label + " failed: " + msg.err.Error())
+			m.notice = errStyle.Render(i18n.T("detail.action_failed", msg.label, msg.err.Error()))
 		} else {
 			m.notice = okStyle.Render(msg.label)
 		}
@@ -248,12 +249,12 @@ func (m DetailModel) Update(msg tea.Msg) (DetailModel, tea.Cmd) {
 			return m.breakout()
 		case "l":
 			if m.snap.State != nil && m.snap.State.IsJailed {
-				return m.askConfirm("bail", "Pay bail (ETH) to release now")
+				return m.askConfirm("bail", i18n.T("detail.confirm_bail"))
 			}
-			m.notice = errStyle.Render("not in jail")
+			m.notice = errStyle.Render(i18n.T("detail.not_in_jail"))
 			return m, nil
 		case "a":
-			return m.askConfirm("resetattempts", "Reset daily attempts")
+			return m.askConfirm("resetattempts", i18n.T("detail.confirm_reset_attempts"))
 		case "p":
 			return m.openPVP()
 		case "t":
@@ -264,15 +265,15 @@ func (m DetailModel) Update(msg tea.Msg) (DetailModel, tea.Cmd) {
 			return m.commitStageAction()
 		case "o":
 			if m.canCashOut() {
-				return m.askConfirm("cashout", fmt.Sprintf("Cash out heist #%d (pot %s)", m.heistID, heistPot(m.heist)))
+				return m.askConfirm("cashout", i18n.T("detail.confirm_cashout", m.heistID, heistPot(m.heist)))
 			}
-			m.notice = errStyle.Render("cash out needs a revealed-win heist at stage ≥ 2")
+			m.notice = errStyle.Render(i18n.T("detail.cashout_needs"))
 			return m, nil
 		case "x":
 			if m.heist != nil && m.heist.Status == uint8(bindings.HeistPreStage) {
-				return m.askConfirm("abandon", fmt.Sprintf("Abandon heist #%d (refund stake)", m.heistID))
+				return m.askConfirm("abandon", i18n.T("detail.confirm_abandon", m.heistID))
 			}
-			m.notice = errStyle.Render("abandon only works before the first stage")
+			m.notice = errStyle.Render(i18n.T("detail.abandon_only"))
 			return m, nil
 		}
 	}
@@ -286,11 +287,11 @@ func (m DetailModel) canCashOut() bool {
 // openTravel opens the destination picker and fetches the area list.
 func (m DetailModel) openTravel() (DetailModel, tea.Cmd) {
 	if m.deps.Manager == nil {
-		m.notice = errStyle.Render("read-only: no signer configured")
+		m.notice = errStyle.Render(i18n.T("detail.read_only_no_signer"))
 		return m, nil
 	}
 	if m.snap.State != nil && m.snap.State.IsJailed {
-		m.notice = errStyle.Render("can't travel while jailed")
+		m.notice = errStyle.Render(i18n.T("detail.cant_travel_jailed"))
 		return m, nil
 	}
 	m.tvOpen = true
@@ -338,13 +339,13 @@ func (m DetailModel) canEnter(a bindings.AreaEconomy) (bool, string) {
 	if a.AreaID == bindings.BlackMarketArea {
 		min := big.NewInt(bindings.BlackMarketMinInfamy)
 		if st.Infamy == nil || st.Infamy.Cmp(min) < 0 {
-			return false, fmt.Sprintf("infamy≥%d", bindings.BlackMarketMinInfamy)
+			return false, i18n.T("detail.gate_infamy", bindings.BlackMarketMinInfamy)
 		}
 		return true, ""
 	}
 	if a.MinReputation != nil && a.MinReputation.Sign() > 0 {
 		if st.Reputation == nil || st.Reputation.Cmp(a.MinReputation) < 0 {
-			return false, "rep≥" + a.MinReputation.String()
+			return false, i18n.T("detail.gate_rep") + a.MinReputation.String()
 		}
 	}
 	return true, ""
@@ -371,15 +372,15 @@ func (m DetailModel) updateTravel(msg tea.KeyMsg) (DetailModel, tea.Cmd) {
 		}
 		dest := m.tvDests[m.tvIdx]
 		if ok, why := m.canEnter(dest); !ok {
-			m.notice = errStyle.Render(fmt.Sprintf("can't enter %s: need %s", m.deps.AreaName(dest.AreaID), why))
+			m.notice = errStyle.Render(i18n.T("detail.cant_enter", m.deps.AreaName(dest.AreaID), why))
 			return m, nil
 		}
 		m.tvOpen = false
 		m.submitting = true
-		m.notice = statusBarStyle.Render("traveling to " + m.deps.AreaName(dest.AreaID) + "…")
+		m.notice = statusBarStyle.Render(i18n.T("detail.traveling_to", m.deps.AreaName(dest.AreaID)))
 		area := dest.AreaID
 		name := m.deps.AreaName(area)
-		return m, m.managerAction("arrived at "+name, func(ctx context.Context) error {
+		return m, m.managerAction(i18n.T("detail.arrived_at", name), func(ctx context.Context) error {
 			return m.deps.Manager.Travel(ctx, m.tokenID, area)
 		})
 	}
@@ -393,19 +394,19 @@ func (m DetailModel) travelView() string {
 	if m.snap.State != nil {
 		here = m.deps.AreaName(m.snap.State.CurrentArea)
 	}
-	fmt.Fprintf(&b, "%s  %s\n\n", titleStyle.Render("TRAVEL"), helpStyle.Render("you're in "+here))
+	fmt.Fprintf(&b, "%s  %s\n\n", titleStyle.Render(i18n.T("detail.travel_title")), helpStyle.Render(i18n.T("detail.youre_in", here)))
 
 	switch {
 	case m.tvLoading:
-		b.WriteString(statusBarStyle.Render("loading areas…\n"))
+		b.WriteString(statusBarStyle.Render(i18n.T("detail.loading_areas")))
 	case m.tvErr != "":
-		b.WriteString(errStyle.Render("failed: "+m.tvErr) + "\n")
+		b.WriteString(errStyle.Render(i18n.T("detail.failed", m.tvErr)) + "\n")
 	case len(m.tvDests) == 0:
-		b.WriteString(helpStyle.Render("no destinations available\n"))
+		b.WriteString(helpStyle.Render(i18n.T("detail.no_destinations")))
 	default:
 		for i, a := range m.tvDests {
 			cursor := "  "
-			fee := "free"
+			fee := i18n.T("detail.free")
 			if a.MovementFee != nil && a.MovementFee.Sign() > 0 {
 				fee = dealer.EthStr(a.MovementFee)
 			}
@@ -413,9 +414,9 @@ func (m DetailModel) travelView() string {
 			if ok, why := m.canEnter(a); !ok {
 				line += errStyle.Render("  🔒 " + why)
 			} else if a.AreaID == bindings.BlackMarketArea {
-				line += helpStyle.Render(fmt.Sprintf("  infamy≥%d", bindings.BlackMarketMinInfamy))
+				line += helpStyle.Render("  " + i18n.T("detail.gate_infamy", bindings.BlackMarketMinInfamy))
 			} else if a.MinReputation != nil && a.MinReputation.Sign() > 0 {
-				line += helpStyle.Render(fmt.Sprintf("  rep≥%s", a.MinReputation))
+				line += helpStyle.Render("  " + i18n.T("detail.gate_rep") + a.MinReputation.String())
 			}
 			if i == m.tvIdx {
 				cursor = focusStyle.Render("▶ ")
@@ -427,18 +428,18 @@ func (m DetailModel) travelView() string {
 	if m.notice != "" {
 		b.WriteString("\n" + m.notice + "\n")
 	}
-	b.WriteString("\n" + helpStyle.Render("↑/↓ pick · enter travel · esc back"))
+	b.WriteString("\n" + helpStyle.Render(i18n.T("detail.travel_hint")))
 	return b.String()
 }
 
 // openHeistStart opens the start-heist form (only when no active heist).
 func (m DetailModel) openHeistStart() (DetailModel, tea.Cmd) {
 	if m.deps.Manager == nil {
-		m.notice = errStyle.Render("read-only: no signer configured")
+		m.notice = errStyle.Render(i18n.T("detail.read_only_no_signer"))
 		return m, nil
 	}
 	if m.heistID != 0 {
-		m.notice = errStyle.Render(fmt.Sprintf("already running heist #%d", m.heistID))
+		m.notice = errStyle.Render(i18n.T("detail.already_running_heist", m.heistID))
 		return m, nil
 	}
 	m.hsOpen = true
@@ -478,10 +479,10 @@ func (m DetailModel) updateHeistStart(msg tea.KeyMsg) (DetailModel, tea.Cmd) {
 	case "enter":
 		m.hsOpen = false
 		m.submitting = true
-		m.notice = statusBarStyle.Render("starting heist…")
+		m.notice = statusBarStyle.Render(i18n.T("detail.starting_heist"))
 		deps, tid := m.deps, m.tokenID
 		fam, diff, jp := m.hsFamily, m.hsDiff, m.hsJackpot
-		return m, m.managerAction("heist started", func(ctx context.Context) error {
+		return m, m.managerAction(i18n.T("detail.heist_started"), func(ctx context.Context) error {
 			_, err := deps.Manager.StartHeist(ctx, tid, fam, diff, jp)
 			return err
 		})
@@ -492,20 +493,20 @@ func (m DetailModel) updateHeistStart(msg tea.KeyMsg) (DetailModel, tea.Cmd) {
 // commitStageAction pushes the heist forward (commit next stage).
 func (m DetailModel) commitStageAction() (DetailModel, tea.Cmd) {
 	if m.deps.Manager == nil {
-		m.notice = errStyle.Render("read-only: no signer configured")
+		m.notice = errStyle.Render(i18n.T("detail.read_only_no_signer"))
 		return m, nil
 	}
 	if m.heist == nil {
-		m.notice = errStyle.Render("no active heist — press h to start one")
+		m.notice = errStyle.Render(i18n.T("detail.no_active_heist"))
 		return m, nil
 	}
 	st := m.heist.Status
 	if st != uint8(bindings.HeistPreStage) && st != uint8(bindings.HeistRevealedWin) {
-		m.notice = errStyle.Render("can't push now (stage in progress or run ended)")
+		m.notice = errStyle.Render(i18n.T("detail.cant_push_now"))
 		return m, nil
 	}
 	m.submitting = true
-	m.notice = statusBarStyle.Render("committing heist stage…")
+	m.notice = statusBarStyle.Render(i18n.T("detail.committing_stage"))
 	deps, tid, hid := m.deps, m.tokenID, m.heistID
 	return m, func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -518,7 +519,7 @@ func (m DetailModel) commitStageAction() (DetailModel, tea.Cmd) {
 // openPVP enters the target browser and kicks off a scan of the attacker's area.
 func (m DetailModel) openPVP() (DetailModel, tea.Cmd) {
 	if m.deps.Manager == nil {
-		m.notice = errStyle.Render("read-only: no signer configured (set wallet.source)")
+		m.notice = errStyle.Render(i18n.T("detail.read_only_no_signer_src"))
 		return m, nil
 	}
 	m.pvpOpen = true
@@ -557,13 +558,13 @@ func (m DetailModel) updatePVP(msg tea.KeyMsg) (DetailModel, tea.Cmd) {
 		}
 		t := m.targets[m.targetIdx]
 		if !t.CanAttackNow {
-			m.notice = errStyle.Render("target not attackable right now")
+			m.notice = errStyle.Render(i18n.T("detail.target_not_attackable"))
 			return m, nil
 		}
 		def := t.TokenID.Uint64()
 		m.pvpOpen = false
 		m.submitting = true
-		m.notice = statusBarStyle.Render(fmt.Sprintf("attacking #%d…", def))
+		m.notice = statusBarStyle.Render(i18n.T("detail.attacking", def))
 		deps, tid := m.deps, m.tokenID
 		return m, func() tea.Msg {
 			ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -578,15 +579,15 @@ func (m DetailModel) updatePVP(msg tea.KeyMsg) (DetailModel, tea.Cmd) {
 // breakout starts a free jailbreak (commit-reveal, ~50%, once/day, no ETH/energy).
 func (m DetailModel) breakout() (DetailModel, tea.Cmd) {
 	if m.deps.Manager == nil {
-		m.notice = errStyle.Render("read-only: no signer configured")
+		m.notice = errStyle.Render(i18n.T("detail.read_only_no_signer"))
 		return m, nil
 	}
 	if m.snap.State != nil && !m.snap.State.IsJailed {
-		m.notice = errStyle.Render("not in jail")
+		m.notice = errStyle.Render(i18n.T("detail.not_in_jail"))
 		return m, nil
 	}
 	m.submitting = true
-	m.notice = statusBarStyle.Render("attempting breakout (free · ~50% · 1/day)…")
+	m.notice = statusBarStyle.Render(i18n.T("detail.attempting_breakout"))
 	deps, tid := m.deps, m.tokenID
 	return m, func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -601,11 +602,11 @@ func (m DetailModel) breakout() (DetailModel, tea.Cmd) {
 // confirm — treated like a hustle; the engine resolves it in the background.
 func (m DetailModel) clearHeat() (DetailModel, tea.Cmd) {
 	if m.deps.Manager == nil {
-		m.notice = errStyle.Render("read-only: no signer configured (set wallet.source)")
+		m.notice = errStyle.Render(i18n.T("detail.read_only_no_signer_src"))
 		return m, nil
 	}
 	m.submitting = true
-	m.notice = statusBarStyle.Render("removing wanted poster (spends 1 attempt · ~50% to clear heat)…")
+	m.notice = statusBarStyle.Render(i18n.T("detail.removing_poster"))
 	deps, tid := m.deps, m.tokenID
 	return m, func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
@@ -618,11 +619,11 @@ func (m DetailModel) clearHeat() (DetailModel, tea.Cmd) {
 // askConfirm arms a y/n confirmation for a single-tx action that spends ETH.
 func (m DetailModel) askConfirm(id, label string) (DetailModel, tea.Cmd) {
 	if m.deps.Manager == nil {
-		m.notice = errStyle.Render("read-only: no signer configured (set wallet.source)")
+		m.notice = errStyle.Render(i18n.T("detail.read_only_no_signer_src"))
 		return m, nil
 	}
 	m.confirm = id
-	m.notice = statusBarStyle.Render(label + "? (pays a small ETH fee)  y = confirm · n = cancel")
+	m.notice = statusBarStyle.Render(i18n.T("detail.confirm_prompt", label))
 	return m, nil
 }
 
@@ -634,25 +635,25 @@ func (m DetailModel) updateConfirm(msg tea.KeyMsg) (DetailModel, tea.Cmd) {
 		m.submitting = true
 		switch id {
 		case "resetattempts":
-			m.notice = statusBarStyle.Render("resetting attempts…")
-			return m, m.managerAction("attempts reset", func(ctx context.Context) error {
+			m.notice = statusBarStyle.Render(i18n.T("detail.resetting_attempts"))
+			return m, m.managerAction(i18n.T("detail.attempts_reset"), func(ctx context.Context) error {
 				return m.deps.Manager.ResetAttempts(ctx, m.tokenID)
 			})
 		case "cashout":
 			hid := m.heistID
-			m.notice = statusBarStyle.Render("cashing out…")
-			return m, m.managerAction("heist cashed out", func(ctx context.Context) error {
+			m.notice = statusBarStyle.Render(i18n.T("detail.cashing_out"))
+			return m, m.managerAction(i18n.T("detail.heist_cashed_out"), func(ctx context.Context) error {
 				return m.deps.Manager.CashOut(ctx, m.tokenID, hid)
 			})
 		case "abandon":
 			hid := m.heistID
-			m.notice = statusBarStyle.Render("abandoning heist…")
-			return m, m.managerAction("heist abandoned", func(ctx context.Context) error {
+			m.notice = statusBarStyle.Render(i18n.T("detail.abandoning_heist"))
+			return m, m.managerAction(i18n.T("detail.heist_abandoned"), func(ctx context.Context) error {
 				return m.deps.Manager.AbandonHeist(ctx, m.tokenID, hid)
 			})
 		case "bail":
-			m.notice = statusBarStyle.Render("paying bail…")
-			return m, m.managerAction("bailed out", func(ctx context.Context) error {
+			m.notice = statusBarStyle.Render(i18n.T("detail.paying_bail"))
+			return m, m.managerAction(i18n.T("detail.bailed_out"), func(ctx context.Context) error {
 				return m.deps.Manager.PayBail(ctx, m.tokenID)
 			})
 		}
@@ -683,23 +684,23 @@ func (m DetailModel) inBlackMarket() bool {
 
 func (m DetailModel) openForm(h bindings.HustleType) (DetailModel, tea.Cmd) {
 	if m.deps.Manager == nil {
-		m.notice = errStyle.Render("read-only: no signer configured (set wallet.source)")
+		m.notice = errStyle.Render(i18n.T("detail.read_only_no_signer_src"))
 		return m, nil
 	}
 	if h == bindings.HustleBuy && m.inBlackMarket() {
-		m.notice = errStyle.Render("can't buy in the black market — only sell loot here")
+		m.notice = errStyle.Render(i18n.T("detail.cant_buy_bm"))
 		return m, nil
 	}
 	if len(m.areaDrugs) == 0 {
-		m.notice = errStyle.Render("no market data for this area yet — press r to refresh")
+		m.notice = errStyle.Render(i18n.T("detail.no_market_data"))
 		return m, nil
 	}
 	list := m.tradeable(h)
 	if len(list) == 0 {
 		if h == bindings.HustleBuy {
-			m.notice = errStyle.Render("nothing to buy in " + m.deps.AreaName(areaOf(m.snap)))
+			m.notice = errStyle.Render(i18n.T("detail.nothing_to_buy", m.deps.AreaName(areaOf(m.snap))))
 		} else {
-			m.notice = errStyle.Render("you hold nothing sellable in " + m.deps.AreaName(areaOf(m.snap)))
+			m.notice = errStyle.Render(i18n.T("detail.nothing_sellable", m.deps.AreaName(areaOf(m.snap))))
 		}
 		return m, nil
 	}
@@ -809,13 +810,13 @@ func (m DetailModel) updateForm(msg tea.KeyMsg) (DetailModel, tea.Cmd) {
 		// In the black market, selling loot is a guaranteed single-tx (sellDrop),
 		// not the PVE gamble — and it costs no energy.
 		if m.inBlackMarket() {
-			m.notice = statusBarStyle.Render(fmt.Sprintf("black market: selling %d × #%d (guaranteed, no energy)…", amount, drug))
+			m.notice = statusBarStyle.Render(i18n.T("detail.bm_selling", amount, drug))
 			d, a := drug, amount
-			return m, m.managerAction(fmt.Sprintf("black market: sold %d × #%d", a, d), func(ctx context.Context) error {
+			return m, m.managerAction(i18n.T("detail.bm_sold", a, d), func(ctx context.Context) error {
 				return m.deps.Manager.SellDrop(ctx, m.tokenID, d, a)
 			})
 		}
-		m.notice = statusBarStyle.Render(fmt.Sprintf("committing %s drug=%d amount=%d…", hustleName(m.hustle), drug, amount))
+		m.notice = statusBarStyle.Render(i18n.T("detail.committing_trade", hustleName(m.hustle), drug, amount))
 		return m, m.submitCmd(drug, amount)
 	}
 
@@ -831,10 +832,10 @@ func (m DetailModel) parseAmount() (uint64, error) {
 	}
 	amount, err := strconv.ParseUint(as, 10, 64)
 	if err != nil || amount == 0 {
-		return 0, fmt.Errorf("amount must be a positive number")
+		return 0, fmt.Errorf("%s", i18n.T("detail.amount_positive"))
 	}
 	if max, label, ok := m.tradeLimit(); ok && amount > max {
-		return 0, fmt.Errorf("max %d units here (%s)", max, label)
+		return 0, fmt.Errorf("%s", i18n.T("detail.max_units", max, label))
 	}
 	return amount, nil
 }
@@ -862,16 +863,16 @@ func (m DetailModel) tradeLimit() (max uint64, label string, ok bool) {
 	// has no stake limit.
 	if !m.inBlackMarket() && m.deps.StakeParams != nil && m.gameState != nil {
 		if u := dealer.MaxUnitsAtPrice(dealer.MaxStake(m.gameState, m.deps.StakeParams), price); u > 0 {
-			caps = append(caps, cap{u, "stake cap"})
+			caps = append(caps, cap{u, i18n.T("detail.cap_stake")})
 		}
 	}
 	// Resource cap: cash for buy, holdings for sell.
 	if m.hustle == bindings.HustleBuy {
 		if cash := m.snap.State.CashBalance; cash != nil && price != nil && price.Sign() > 0 {
-			caps = append(caps, cap{new(big.Int).Div(cash, price).Uint64(), "cash"})
+			caps = append(caps, cap{new(big.Int).Div(cash, price).Uint64(), i18n.T("detail.cap_cash")})
 		}
 	} else {
-		caps = append(caps, cap{m.heldBalance(sel.DrugID.Uint64()).Uint64(), "held"})
+		caps = append(caps, cap{m.heldBalance(sel.DrugID.Uint64()).Uint64(), i18n.T("detail.cap_held")})
 	}
 
 	if len(caps) == 0 {
@@ -895,23 +896,23 @@ func (m DetailModel) View() string {
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s\n\n", titleStyle.Render(fmt.Sprintf("Dealer #%d", m.tokenID)))
+	fmt.Fprintf(&b, "%s\n\n", titleStyle.Render(i18n.T("detail.dealer_title", m.tokenID)))
 
 	if m.snap.Err != nil {
-		b.WriteString(errStyle.Render("read error: "+m.snap.Err.Error()) + "\n")
+		b.WriteString(errStyle.Render(i18n.T("detail.read_error", m.snap.Err.Error())) + "\n")
 	} else if st := m.snap.State; st != nil {
-		b.WriteString(kv("Rank", st.ReputationTitle))
+		b.WriteString(kv(i18n.T("detail.kv_rank"), st.ReputationTitle))
 		b.WriteString(kv("REP", bigStr(st.Reputation)))
-		b.WriteString(kv("Heat", fmt.Sprintf("%d/5", st.HeatLevel)))
-		b.WriteString(kv("Cash", bigStr(st.CashBalance)))
-		b.WriteString(kv("Area", m.deps.AreaName(st.CurrentArea)))
-		b.WriteString(kv("Energy", fmt.Sprintf("%d/%d attempts", st.DailyAttemptsRemaining, st.MaxAttempts)))
-		b.WriteString(kv("Infamy", bigStr(st.Infamy)))
-		b.WriteString(kv("PVE W/T/L", fmt.Sprintf("%d/%d/%d", st.PveWins, st.PveTies, st.PveLosses)))
-		b.WriteString(kv("Status", m.snap.Status()))
-		b.WriteString("\n" + sectionStyle.Render("Stash") + "\n")
+		b.WriteString(kv(i18n.T("detail.kv_heat"), fmt.Sprintf("%d/5", st.HeatLevel)))
+		b.WriteString(kv(i18n.T("detail.kv_cash"), bigStr(st.CashBalance)))
+		b.WriteString(kv(i18n.T("detail.kv_area"), m.deps.AreaName(st.CurrentArea)))
+		b.WriteString(kv(i18n.T("detail.kv_energy"), i18n.T("detail.attempts_fmt", st.DailyAttemptsRemaining, st.MaxAttempts)))
+		b.WriteString(kv(i18n.T("detail.kv_infamy"), bigStr(st.Infamy)))
+		b.WriteString(kv(i18n.T("detail.kv_pve_wtl"), fmt.Sprintf("%d/%d/%d", st.PveWins, st.PveTies, st.PveLosses)))
+		b.WriteString(kv(i18n.T("detail.kv_status"), m.snap.Status()))
+		b.WriteString("\n" + sectionStyle.Render(i18n.T("detail.sec_stash")) + "\n")
 		if len(st.DrugBalances) == 0 {
-			b.WriteString(helpStyle.Render("  (empty)\n"))
+			b.WriteString(helpStyle.Render(i18n.T("detail.empty")))
 		}
 		for _, d := range st.DrugBalances {
 			if d.Balance != nil && d.Balance.Sign() > 0 {
@@ -921,33 +922,33 @@ func (m DetailModel) View() string {
 	}
 
 	// Open rounds.
-	b.WriteString("\n" + sectionStyle.Render("Pending") + "\n")
+	b.WriteString("\n" + sectionStyle.Render(i18n.T("detail.sec_pending")) + "\n")
 	if len(m.pending) == 0 {
-		b.WriteString(helpStyle.Render("  none\n"))
+		b.WriteString(helpStyle.Render(i18n.T("detail.none")))
 	}
 	for _, p := range m.pending {
-		fmt.Fprintf(&b, "  seq %d · %s · reveal@%d expiry@%d %s\n",
-			p.Seq, p.Kind, p.RevealBlock, p.ExpiryBlock, statusBarStyle.Render("(resolving)"))
+		fmt.Fprint(&b, i18n.T("detail.pending_row",
+			p.Seq, p.Kind, p.RevealBlock, p.ExpiryBlock, statusBarStyle.Render(i18n.T("detail.resolving"))))
 	}
 
 	// Heist.
-	b.WriteString("\n" + sectionStyle.Render("Heist") + "\n")
+	b.WriteString("\n" + sectionStyle.Render(i18n.T("detail.sec_heist")) + "\n")
 	if m.hsOpen {
 		b.WriteString(m.heistStartView())
 	} else if m.heist == nil {
-		b.WriteString(helpStyle.Render("  none · h to start (needs REP ≥ 600)\n"))
+		b.WriteString(helpStyle.Render(i18n.T("detail.heist_none")))
 	} else {
 		h := m.heist
-		fmt.Fprintf(&b, "  #%d %s difficulty=%d · stage %d · %s · pot %s%s\n",
+		fmt.Fprint(&b, i18n.T("detail.heist_row",
 			m.heistID, bindings.HeistFamily(h.Family), h.Difficulty, h.CurrentStage,
-			bindings.HeistStatus(h.Status), bigStr(h.CurrentPot), jackpotFlag(h.EthJackpot))
+			bindings.HeistStatus(h.Status), bigStr(h.CurrentPot), jackpotFlag(h.EthJackpot)))
 		b.WriteString(helpStyle.Render("  " + heistActionsHint(h) + "\n"))
 	}
 
 	// Recent log.
-	b.WriteString("\n" + sectionStyle.Render("Recent") + "\n")
+	b.WriteString("\n" + sectionStyle.Render(i18n.T("detail.sec_recent")) + "\n")
 	if len(m.log) == 0 {
-		b.WriteString(helpStyle.Render("  no activity yet\n"))
+		b.WriteString(helpStyle.Render(i18n.T("detail.no_activity")))
 	}
 	for _, l := range m.log {
 		fmt.Fprintf(&b, "  %s %s: %s\n", helpStyle.Render(l.TS), l.Kind, colorizeLog(l.Summary))
@@ -961,13 +962,13 @@ func (m DetailModel) View() string {
 	if m.formOpen {
 		b.WriteString(m.formView())
 	} else {
-		hint := "b buy · s sell · p pvp · t travel · h heist · c clear-heat · a reset-attempts · r refresh · esc back"
+		hint := i18n.T("detail.hint_main")
 		if m.deps.Manager == nil {
-			hint = "read-only · r refresh · esc back"
+			hint = i18n.T("detail.hint_readonly")
 		} else if m.snap.State != nil && m.snap.State.IsJailed {
-			hint = "JAILED · k breakout (free ~50% · 1/day) · l bail (ETH, instant) · r refresh · esc back"
+			hint = i18n.T("detail.hint_jailed")
 		} else if m.inBlackMarket() {
-			hint = "BLACK MARKET · s sell loot (guaranteed, no energy) · t travel · r refresh · esc back"
+			hint = i18n.T("detail.hint_bm")
 		}
 		b.WriteString(helpStyle.Render(hint))
 	}
@@ -976,19 +977,19 @@ func (m DetailModel) View() string {
 
 // heistStartView renders the start-heist form.
 func (m DetailModel) heistStartView() string {
-	fam := "SUPPLY"
+	fam := i18n.T("detail.fam_supply")
 	if m.hsFamily == bindings.FamilyCash {
-		fam = "CASH"
+		fam = i18n.T("detail.fam_cash")
 	}
-	diffNames := []string{"easy (rep 600)", "medium (rep 1500)", "hard (rep 5500)"}
-	jp := "off"
+	diffNames := []string{i18n.T("detail.diff_easy"), i18n.T("detail.diff_medium"), i18n.T("detail.diff_hard")}
+	jp := i18n.T("common.off")
 	if m.hsJackpot {
-		jp = "on (+0.001 ETH)"
+		jp = i18n.T("detail.jp_on")
 	}
 	rows := []struct{ label, val string }{
-		{"Family", fam},
-		{"Difficulty", diffNames[m.hsDiff]},
-		{"ETH jackpot", jp},
+		{i18n.T("detail.lbl_family"), fam},
+		{i18n.T("detail.lbl_difficulty"), diffNames[m.hsDiff]},
+		{i18n.T("detail.lbl_eth_jackpot"), jp},
 	}
 	var b strings.Builder
 	for i, r := range rows {
@@ -1000,7 +1001,7 @@ func (m DetailModel) heistStartView() string {
 		}
 		fmt.Fprintf(&b, "  %s%-12s %s\n", marker, label, r.val)
 	}
-	b.WriteString(helpStyle.Render("  ↑/↓ field · ←/→/space change · enter start · esc cancel\n"))
+	b.WriteString(helpStyle.Render(i18n.T("detail.heist_start_hint")))
 	return b.String()
 }
 
@@ -1013,7 +1014,7 @@ func heistPot(h *bindings.DailyHeist) string {
 
 func jackpotFlag(on bool) string {
 	if on {
-		return " · 🎰jackpot"
+		return i18n.T("detail.jackpot_flag")
 	}
 	return ""
 }
@@ -1022,38 +1023,38 @@ func jackpotFlag(on bool) string {
 func heistActionsHint(h *bindings.DailyHeist) string {
 	switch bindings.HeistStatus(h.Status) {
 	case bindings.HeistPreStage:
-		return "g push (start stage 1) · x abandon"
+		return i18n.T("detail.hint_prestage")
 	case bindings.HeistRevealedWin:
 		if h.CurrentStage >= 2 {
-			return "g push deeper · o cash out"
+			return i18n.T("detail.hint_pushdeeper_cashout")
 		}
-		return "g push deeper (cash out unlocks at stage 2)"
+		return i18n.T("detail.hint_pushdeeper")
 	case bindings.HeistCommitted:
-		return "resolving stage in background…"
+		return i18n.T("detail.hint_resolving_stage")
 	default:
-		return "run ended — h to start a new heist"
+		return i18n.T("detail.hint_run_ended")
 	}
 }
 
 // pvpView renders the target browser.
 func (m DetailModel) pvpView() string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s\n\n", titleStyle.Render(fmt.Sprintf("PVP TARGETS — attacker #%d", m.tokenID)))
+	fmt.Fprintf(&b, "%s\n\n", titleStyle.Render(i18n.T("detail.pvp_title", m.tokenID)))
 
 	switch {
 	case m.pvpLoading:
-		b.WriteString(statusBarStyle.Render("scanning your area…\n"))
+		b.WriteString(statusBarStyle.Render(i18n.T("detail.scanning_area")))
 	case m.pvpErr != "":
-		b.WriteString(errStyle.Render("scan failed: "+m.pvpErr) + "\n")
+		b.WriteString(errStyle.Render(i18n.T("detail.scan_failed", m.pvpErr)) + "\n")
 	case len(m.targets) == 0:
-		b.WriteString(helpStyle.Render("no attackable targets here.\nPVP needs REP ≥ 200 and another dealer in the same area.\n"))
+		b.WriteString(helpStyle.Render(i18n.T("detail.no_targets")))
 	default:
 		for i, t := range m.targets {
 			cursor := "  "
-			line := fmt.Sprintf("#%-4s rep=%-6s win=%s%% infamy=%s",
+			line := i18n.T("detail.pvp_row",
 				t.TokenID, bigStr(t.Reputation), bigStr(t.WinChance), bigStr(t.Infamy))
 			if !t.CanAttackNow {
-				line += helpStyle.Render("  [unavailable]")
+				line += helpStyle.Render("  [" + i18n.T("common.unavailable") + "]")
 			}
 			if i == m.targetIdx {
 				cursor = focusStyle.Render("▶ ")
@@ -1064,38 +1065,38 @@ func (m DetailModel) pvpView() string {
 	}
 
 	if m.alliesHidden > 0 {
-		b.WriteString(helpStyle.Render(fmt.Sprintf("\n  (%d ally target(s) hidden)\n", m.alliesHidden)))
+		b.WriteString(helpStyle.Render(i18n.T("detail.allies_hidden", m.alliesHidden)))
 	}
 	if m.notice != "" {
 		b.WriteString("\n" + m.notice + "\n")
 	}
-	b.WriteString("\n" + helpStyle.Render("↑/↓ pick target · enter attack · esc back"))
+	b.WriteString("\n" + helpStyle.Render(i18n.T("detail.pvp_hint")))
 	return b.String()
 }
 
 func (m DetailModel) formView() string {
 	sel := m.drugs[m.drugIdx]
 	price := sel.BuyPrice
-	plabel := "buy"
+	plabel := i18n.T("detail.buy")
 	if m.hustle == bindings.HustleSell {
 		price = sel.SellPrice
-		plabel = "sell"
+		plabel = i18n.T("detail.sell")
 	}
 	bal := m.heldBalance(sel.DrugID.Uint64())
-	drugLine := fmt.Sprintf("  Drug:   %s #%s %s  %s",
+	drugLine := i18n.T("detail.drug_line",
 		focusStyle.Render("↑/↓"),
 		sel.DrugID, sel.Name,
-		helpStyle.Render(fmt.Sprintf("(%s @%s · you have ×%s · %d/%d)", plabel, bigStr(price), bal, m.drugIdx+1, len(m.drugs))))
-	amtLine := "  Amount: " + m.amount.View()
+		helpStyle.Render(i18n.T("detail.drug_meta", plabel, bigStr(price), bal, m.drugIdx+1, len(m.drugs))))
+	amtLine := i18n.T("detail.amount_label") + m.amount.View()
 	if max, label, ok := m.tradeLimit(); ok {
-		amtLine += "  " + helpStyle.Render(fmt.Sprintf("max %d (%s)", max, label))
+		amtLine += "  " + helpStyle.Render(i18n.T("detail.max_label", max, label))
 	}
 
 	return fmt.Sprintf("%s %s\n%s\n%s\n%s",
 		titleStyle.Render(strings.ToUpper(hustleName(m.hustle))),
-		helpStyle.Render("choice: deal — odds fixed"),
+		helpStyle.Render(i18n.T("detail.choice_deal")),
 		drugLine, amtLine,
-		helpStyle.Render("↑/↓ pick drug · type amount · enter submit · esc cancel"))
+		helpStyle.Render(i18n.T("detail.form_hint")))
 }
 
 func kv(k, v string) string {
@@ -1104,7 +1105,7 @@ func kv(k, v string) string {
 
 func hustleName(h bindings.HustleType) string {
 	if h == bindings.HustleSell {
-		return "sell"
+		return i18n.T("detail.sell")
 	}
-	return "buy"
+	return i18n.T("detail.buy")
 }
