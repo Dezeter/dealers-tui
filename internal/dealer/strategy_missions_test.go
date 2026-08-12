@@ -10,15 +10,15 @@ import (
 
 func TestClassifyMetric(t *testing.T) {
 	cases := map[uint8]metricClass{
-		bindings.MetricPVEWins:        classPVE,
-		bindings.MetricPVEGames:       classPVE,
-		bindings.MetricPVPAttackWins:  classPVP,
-		bindings.MetricPVPGames:       classPVP,
-		bindings.MetricAnyGames:       classAny,
-		bindings.MetricPVPDefendWins:  classPassive,
-		bindings.MetricHeistRuns:      classPassive,
-		bindings.MetricRepGain:        classPassive,
-		bindings.MetricInfamyGain:     classPassive,
+		bindings.MetricPVEWins:         classPVE,
+		bindings.MetricPVEGames:        classPVE,
+		bindings.MetricPVPAttackWins:   classPVP,
+		bindings.MetricPVPGames:        classPVP,
+		bindings.MetricAnyGames:        classAny,
+		bindings.MetricPVPDefendWins:   classPassive,
+		bindings.MetricHeistRuns:       classPassive,
+		bindings.MetricRepGain:         classPassive,
+		bindings.MetricInfamyGain:      classPassive,
 		bindings.MetricMissionsClaimed: classPassive,
 	}
 	for metric, want := range cases {
@@ -51,7 +51,7 @@ func TestMissionSteerPvEStrategyOverriddenByPvPMission(t *testing.T) {
 		targets:  []bindings.PVPTarget{{TokenID: big.NewInt(99), CanAttackNow: true}},
 	}
 	d := Decision{Snap: Snapshot{TokenID: 1, State: steerState()}, Area: weedMarket(100, 90)}
-	a, ok := missionSteer(context.Background(), r, d, classPVE, nil, "")
+	a, ok := missionSteer(context.Background(), r, d, classPVE, nil, "", "")
 	if !ok || a.Kind != ActionPVP || a.DefenderID != 99 {
 		t.Fatalf("PvE dealer w/ PvP mission should attack, got %+v ok=%v", a, ok)
 	}
@@ -61,12 +61,12 @@ func TestMissionSteerLeavesMatchingMissionToStrategy(t *testing.T) {
 	// A PvE-strategy dealer with a PvE daily mission → no steer (strategy handles it).
 	r := &fakeReader{missions: []bindings.MissionStatus{dailyMission(bindings.MetricPVEGames, 0, 5)}}
 	d := Decision{Snap: Snapshot{TokenID: 1, State: steerState()}, Area: weedMarket(100, 90)}
-	if _, ok := missionSteer(context.Background(), r, d, classPVE, nil, ""); ok {
+	if _, ok := missionSteer(context.Background(), r, d, classPVE, nil, "", ""); ok {
 		t.Error("matching-class mission should be left to the strategy")
 	}
 	// ANY_GAMES is covered by any strategy → never steered.
 	r = &fakeReader{missions: []bindings.MissionStatus{dailyMission(bindings.MetricAnyGames, 0, 5)}}
-	if _, ok := missionSteer(context.Background(), r, d, classPVE, nil, ""); ok {
+	if _, ok := missionSteer(context.Background(), r, d, classPVE, nil, "", ""); ok {
 		t.Error("ANY_GAMES is covered by every strategy → no steer")
 	}
 }
@@ -75,18 +75,24 @@ func TestMissionSteerCompletedMissionReturnsToStrategy(t *testing.T) {
 	// PvP mission already at target on a PvE dealer → no steer (back to strategy).
 	r := &fakeReader{missions: []bindings.MissionStatus{dailyMission(bindings.MetricPVPGames, 3, 3)}}
 	d := Decision{Snap: Snapshot{TokenID: 1, State: steerState()}, Area: weedMarket(100, 90)}
-	if _, ok := missionSteer(context.Background(), r, d, classPVE, nil, ""); ok {
+	if _, ok := missionSteer(context.Background(), r, d, classPVE, nil, "", ""); ok {
 		t.Error("completed mission should stop steering")
 	}
 }
 
 func TestMissionSteerPvPStrategyOverriddenByPvEMission(t *testing.T) {
-	// A PvP-strategy dealer with a PvE daily mission → steer to a PvE deal.
-	r := &fakeReader{missions: []bindings.MissionStatus{dailyMission(bindings.MetricPVEWins, 0, 3)}}
+	// A PvP-strategy dealer with a PvE daily mission → steer to a PvE deal, sized
+	// by the trade rule (stake cap 1000 / price 100 = 10 units, well under ⅓ of
+	// the 100000 cash), NOT a throwaway 1-unit buy.
+	r := stakeReader()
+	r.missions = []bindings.MissionStatus{dailyMission(bindings.MetricPVEWins, 0, 3)}
 	d := Decision{Snap: Snapshot{TokenID: 1, State: steerState()}, Area: weedMarket(100, 90)}
-	a, ok := missionSteer(context.Background(), r, d, classPVP, nil, "")
+	a, ok := missionSteer(context.Background(), r, d, classPVP, nil, "", "")
 	if !ok || a.Kind != ActionPVE || a.Hustle != bindings.HustleBuy {
 		t.Fatalf("PvP dealer w/ PvE mission should do a PvE deal, got %+v ok=%v", a, ok)
+	}
+	if a.Amount != 10 {
+		t.Errorf("PvE mission buy = %d units, want 10 (max stake, ≤⅓ balance) — not a 1-unit grind", a.Amount)
 	}
 }
 
@@ -109,7 +115,7 @@ func TestMissionSteerWeeklyWhenNoDailyNeeds(t *testing.T) {
 		targets: []bindings.PVPTarget{{TokenID: big.NewInt(77), CanAttackNow: true}},
 	}
 	d := Decision{Snap: Snapshot{TokenID: 1, State: steerState()}, Area: weedMarket(100, 90)}
-	a, ok := missionSteer(context.Background(), r, d, classPVE, nil, "")
+	a, ok := missionSteer(context.Background(), r, d, classPVE, nil, "", "")
 	if !ok || a.Kind != ActionPVP || a.DefenderID != 77 {
 		t.Fatalf("weekly PvP mission should steer, got %+v ok=%v", a, ok)
 	}
@@ -117,17 +123,16 @@ func TestMissionSteerWeeklyWhenNoDailyNeeds(t *testing.T) {
 
 func TestMissionSteerDailyBeatsWeekly(t *testing.T) {
 	// Both a daily and a weekly mission need steering → daily wins.
-	r := &fakeReader{
-		missions: []bindings.MissionStatus{
-			weeklyMission(bindings.MetricPVPGames, 0, 3), // weekly PvP (listed first)
-			dailyMission(bindings.MetricPVEGames, 0, 5),  // daily PvE
-		},
-		targets: []bindings.PVPTarget{{TokenID: big.NewInt(88), CanAttackNow: true}},
+	r := stakeReader()
+	r.missions = []bindings.MissionStatus{
+		weeklyMission(bindings.MetricPVPGames, 0, 3), // weekly PvP (listed first)
+		dailyMission(bindings.MetricPVEGames, 0, 5),  // daily PvE
 	}
+	r.targets = []bindings.PVPTarget{{TokenID: big.NewInt(88), CanAttackNow: true}}
 	// PvP-strategy dealer: daily PvE mission mismatches → should do the DAILY PvE
 	// deal, not the weekly PvP one, even though weekly is listed first.
 	d := Decision{Snap: Snapshot{TokenID: 1, State: steerState()}, Area: weedMarket(100, 90)}
-	a, ok := missionSteer(context.Background(), r, d, classPVP, nil, "")
+	a, ok := missionSteer(context.Background(), r, d, classPVP, nil, "", "")
 	if !ok || a.Kind != ActionPVE {
 		t.Fatalf("daily mission must take priority over weekly, got %+v ok=%v", a, ok)
 	}
@@ -161,14 +166,14 @@ func TestMissionSteerRespectsAlliesAndEnergy(t *testing.T) {
 		targets:  []bindings.PVPTarget{{TokenID: big.NewInt(50), CanAttackNow: true}},
 	}
 	d := Decision{Snap: Snapshot{TokenID: 1, State: steerState()}, Area: weedMarket(100, 90)}
-	if _, ok := missionSteer(context.Background(), r, d, classPVE, func(id uint64) bool { return id == 50 }, ""); ok {
+	if _, ok := missionSteer(context.Background(), r, d, classPVE, func(id uint64) bool { return id == 50 }, "", ""); ok {
 		t.Error("should not attack an ally to complete a mission")
 	}
 	// Out of energy → no steer (games cost an attempt).
 	st := steerState()
 	st.DailyAttemptsRemaining = 0
 	d2 := Decision{Snap: Snapshot{TokenID: 1, State: st}, Area: weedMarket(100, 90)}
-	if _, ok := missionSteer(context.Background(), r, d2, classPVE, nil, ""); ok {
+	if _, ok := missionSteer(context.Background(), r, d2, classPVE, nil, "", ""); ok {
 		t.Error("no energy → no steering")
 	}
 }

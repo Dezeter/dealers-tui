@@ -162,6 +162,16 @@ func (s *PvEArbitrage) onManhattan(ctx context.Context, r StrategyReader, st *bi
 		if afford := affordable(st.CashBalance, weed.BuyPrice); afford < amount {
 			amount = afford
 		}
+		// Cap the cash-at-risk per buy to ≤ ⅓ of the current balance (user rule:
+		// buy the most the stake cap allows, but never sink more than a third of
+		// cash into one hustle). If even one unit exceeds a third, this yields 0
+		// and the buy is skipped — a broke dealer won't grind 1-unit weed.
+		if st.CashBalance != nil {
+			third := new(big.Int).Div(st.CashBalance, big.NewInt(3))
+			if cap3 := affordable(third, weed.BuyPrice); cap3 < amount {
+				amount = cap3
+			}
+		}
 		if amount > 0 {
 			return Action{Kind: ActionPVE, Hustle: bindings.HustleBuy, DrugID: weed.DrugID.Uint64(), Amount: amount}, true
 		}
@@ -225,4 +235,35 @@ func affordable(cash, price *big.Int) uint64 {
 		return 0
 	}
 	return new(big.Int).Div(cash, price).Uint64()
+}
+
+// pveBuyUnits sizes a PvE buy the way the trade core does: the most the rep stake
+// cap allows at this price, bounded by cash on hand and the ⅓-of-balance rule.
+// Returns 0 when the cap can't be read or ⅓ of cash won't cover a single unit —
+// so a broke or degenerate-low-rep dealer buys nothing rather than 1-unit
+// grinding. Shared by the trade core and PvE mission steering.
+func pveBuyUnits(ctx context.Context, r StrategyReader, tokenID uint64, cash, price *big.Int) uint64 {
+	gs, err := r.GameState(ctx, tokenID)
+	if err != nil || gs == nil {
+		return 0
+	}
+	sp, err := r.StakeParams(ctx)
+	if err != nil || sp == nil {
+		return 0
+	}
+	limit := MaxStake(gs, sp)
+	if limit == nil {
+		return 0
+	}
+	amount := MaxUnitsAtPrice(limit, price)
+	if afford := affordable(cash, price); afford < amount {
+		amount = afford
+	}
+	if cash != nil {
+		third := new(big.Int).Div(cash, big.NewInt(3))
+		if c3 := affordable(third, price); c3 < amount {
+			amount = c3
+		}
+	}
+	return amount
 }

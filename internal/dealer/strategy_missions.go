@@ -40,7 +40,7 @@ func classifyMetric(metric uint8) metricClass {
 // left to it, and a completed mission stops steering. Returns no action when
 // nothing needs steering or the off-strategy action isn't possible right now
 // (afford/target/black-market), so the caller falls through to normal behaviour.
-func missionSteer(ctx context.Context, r StrategyReader, d Decision, primary metricClass, isAlly func(uint64) bool, priority string) (Action, bool) {
+func missionSteer(ctx context.Context, r StrategyReader, d Decision, primary metricClass, isAlly func(uint64) bool, priority, drug string) (Action, bool) {
 	st := d.Snap.State
 	if st == nil || st.DailyAttemptsRemaining == 0 {
 		return Action{}, false // PvE/PvP games cost a daily attempt
@@ -56,7 +56,7 @@ func missionSteer(ctx context.Context, r StrategyReader, d Decision, primary met
 		order = []uint8{bindings.CadenceWeekly, bindings.CadenceDaily}
 	}
 	for _, cadence := range order {
-		if a, ok := steerForCadence(ctx, r, d, primary, isAlly, ms, cadence); ok {
+		if a, ok := steerForCadence(ctx, r, d, primary, isAlly, ms, cadence, drug); ok {
 			return a, true
 		}
 	}
@@ -65,7 +65,7 @@ func missionSteer(ctx context.Context, r StrategyReader, d Decision, primary met
 
 // steerForCadence returns the off-strategy action for the first incomplete
 // mission of the given cadence whose class the strategy doesn't cover.
-func steerForCadence(ctx context.Context, r StrategyReader, d Decision, primary metricClass, isAlly func(uint64) bool, ms []bindings.MissionStatus, cadence uint8) (Action, bool) {
+func steerForCadence(ctx context.Context, r StrategyReader, d Decision, primary metricClass, isAlly func(uint64) bool, ms []bindings.MissionStatus, cadence uint8, drug string) (Action, bool) {
 	st := d.Snap.State
 	for i := range ms {
 		m := &ms[i]
@@ -78,7 +78,7 @@ func steerForCadence(ctx context.Context, r StrategyReader, d Decision, primary 
 		switch classifyMetric(m.Mission.Metric) {
 		case classPVE:
 			if primary != classPVE {
-				if a, ok := pveDealAction(st, d.Area); ok {
+				if a, ok := pveDealAction(ctx, r, st, d.Snap.TokenID, d.Area, drug); ok {
 					return a, true
 				}
 			}
@@ -93,21 +93,31 @@ func steerForCadence(ctx context.Context, r StrategyReader, d Decision, primary 
 	return Action{}, false
 }
 
-// pveDealAction emits one PvE buy of the cheapest affordable drug in-area — the
-// minimal action that advances PVE_GAMES/PVE_WINS. Skips the black market (where
-// commitGame reverts) and unaffordable states.
-func pveDealAction(st *bindings.FullDealerState, area []bindings.AreaDrug) (Action, bool) {
+// pveDealAction emits a PvE buy of the traded drug (weed) — or the cheapest
+// buyable when it isn't sold in this area — to advance PVE_GAMES/PVE_WINS. It
+// sizes the buy by the SAME rule as the trade core (the most the rep stake cap
+// allows, capped at ⅓ of cash), so following a PvE mission is a real trade
+// rather than a throwaway 1-unit buy. Skips the black market (commitGame
+// reverts) and yields when nothing is affordable within the ⅓-cash bound.
+func pveDealAction(ctx context.Context, r StrategyReader, st *bindings.FullDealerState, tokenID uint64, area []bindings.AreaDrug, drug string) (Action, bool) {
 	if st.CurrentArea == bindings.BlackMarketArea {
 		return Action{}, false
 	}
-	drug, ok := cheapestBuyable(area)
-	if !ok || drug.BuyPrice == nil {
+	if drug == "" {
+		drug = weedName
+	}
+	d, ok := findDrug(area, drug)
+	if !ok || d.BuyPrice == nil || d.BuyPrice.Sign() <= 0 {
+		d, ok = cheapestBuyable(area)
+		if !ok || d.BuyPrice == nil {
+			return Action{}, false
+		}
+	}
+	amount := pveBuyUnits(ctx, r, tokenID, st.CashBalance, d.BuyPrice)
+	if amount == 0 {
 		return Action{}, false
 	}
-	if st.CashBalance == nil || st.CashBalance.Cmp(drug.BuyPrice) < 0 {
-		return Action{}, false
-	}
-	return Action{Kind: ActionPVE, Hustle: bindings.HustleBuy, DrugID: drug.DrugID.Uint64(), Amount: 1}, true
+	return Action{Kind: ActionPVE, Hustle: bindings.HustleBuy, DrugID: d.DrugID.Uint64(), Amount: amount}, true
 }
 
 // pvpAttackAction attacks the first attackable non-ally in the current area — the

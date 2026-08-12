@@ -105,7 +105,7 @@ func (sr *stepRunner) Next(ctx context.Context, r StrategyReader, d Decision) (A
 		case StepMissions:
 			a, ok = missionStep(ctx, r, tokenID)
 		case StepFollowMissions:
-			a, ok = missionSteer(ctx, r, d, sr.primary, sr.isAlly, lp.MissionPriority)
+			a, ok = missionSteer(ctx, r, d, sr.primary, sr.isAlly, lp.MissionPriority, lp.Drug)
 		case StepHeists:
 			a, ok = heistMissionStep(ctx, r, d, lp.HeistDifficulty)
 		case StepCore:
