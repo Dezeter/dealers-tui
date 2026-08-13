@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"dealers/internal/chain/bindings"
 	"dealers/internal/template"
 )
 
@@ -26,7 +27,7 @@ func TestProgramTradeCountThenAdvance(t *testing.T) {
 	p := NewProgram(progFor(
 		ProgStep{Action: template.ActionTrade, BuyArea: manhattan, SellArea: amsterdam, Count: 2},
 		ProgStep{Action: template.ActionClearStars},
-	), state, nil, nil)
+	), state, nil, nil, manhattan)
 	st := pveState(manhattan, 5, 100000, 0)
 	st.HeatLevel = 5 // so clear_stars has work once we reach it
 	d := Decision{Snap: Snapshot{TokenID: 1, State: st}, Area: weedMarket(100, 90)}
@@ -61,7 +62,7 @@ func TestProgramBreakoutReachedWhenJailed(t *testing.T) {
 	p := NewProgram(progFor(
 		ProgStep{Action: template.ActionTrade, BuyArea: manhattan, SellArea: amsterdam},
 		ProgStep{Action: template.ActionBreakout},
-	), newMemState(), nil, nil)
+	), newMemState(), nil, nil, manhattan)
 	st := pveState(manhattan, 5, 100000, 0)
 	st.IsJailed = true
 	st.CanBreakoutToday = true
@@ -77,7 +78,7 @@ func TestProgramClearStarsSkipsWhenNoHeat(t *testing.T) {
 	p := NewProgram(progFor(
 		ProgStep{Action: template.ActionClearStars}, // heat 0 → nothing to do
 		ProgStep{Action: template.ActionTrade, BuyArea: manhattan, SellArea: amsterdam},
-	), state, nil, nil)
+	), state, nil, nil, manhattan)
 	st := pveState(manhattan, 5, 100000, 0) // heat 0
 	d := Decision{Snap: Snapshot{TokenID: 4, State: st}, Area: weedMarket(100, 90)}
 	a, ok := p.Next(context.Background(), stakeReader(), d)
@@ -90,7 +91,7 @@ func TestProgramClearStarsSkipsWhenNoHeat(t *testing.T) {
 }
 
 func TestProgramEmptyIdles(t *testing.T) {
-	p := NewProgram(progFor(), newMemState(), nil, nil)
+	p := NewProgram(progFor(), newMemState(), nil, nil, manhattan)
 	st := pveState(manhattan, 5, 100000, 0)
 	if _, ok := p.Next(context.Background(), stakeReader(), Decision{Snap: Snapshot{TokenID: 3, State: st}}); ok {
 		t.Error("an empty program should idle")
@@ -102,7 +103,7 @@ func TestProgramClearStarsThreshold(t *testing.T) {
 	p := NewProgram(progFor(
 		ProgStep{Action: template.ActionClearStars, HeatAt: 4}, // only at 4★+
 		ProgStep{Action: template.ActionTrade, BuyArea: manhattan, SellArea: amsterdam},
-	), state, nil, nil)
+	), state, nil, nil, manhattan)
 	st := pveState(manhattan, 5, 100000, 0)
 	st.HeatLevel = 3 // below the 4★ threshold → skip clear_stars
 	d := Decision{Snap: Snapshot{TokenID: 5, State: st}, Area: weedMarket(100, 90)}
@@ -123,14 +124,26 @@ func TestProgramBreakoutPayBailPerStep(t *testing.T) {
 	d := Decision{Snap: Snapshot{TokenID: 6, State: st}, Area: weedMarket(100, 90)}
 
 	// PayBail opted in on the step → pay bail even with no global setting.
-	p := NewProgram(progFor(ProgStep{Action: template.ActionBreakout, PayBail: true}), newMemState(), nil, nil)
+	p := NewProgram(progFor(ProgStep{Action: template.ActionBreakout, PayBail: true}), newMemState(), nil, nil, manhattan)
 	if a, ok := p.Next(context.Background(), stakeReader(), d); !ok || a.Kind != ActionPayBail {
 		t.Fatalf("breakout with PayBail should pay bail, got %+v ok=%v", a, ok)
 	}
 	// Without PayBail and no global → no bail (idle, waits for tomorrow's free try).
-	p2 := NewProgram(progFor(ProgStep{Action: template.ActionBreakout}), newMemState(), nil, nil)
+	p2 := NewProgram(progFor(ProgStep{Action: template.ActionBreakout}), newMemState(), nil, nil, manhattan)
 	if _, ok := p2.Next(context.Background(), stakeReader(), d); ok {
 		t.Error("breakout without PayBail should not pay bail")
+	}
+}
+
+func TestProgramPvPEscapesBlackMarket(t *testing.T) {
+	// A raider parked in the black market with energy but no targets there must
+	// leave (travel home) rather than sit idle burning nothing.
+	p := NewProgram(progFor(ProgStep{Action: template.ActionPvP}), newMemState(), nil, nil, manhattan)
+	st := pveState(bindings.BlackMarketArea, 5, 100000, 0) // in the BM, has energy, no loot
+	d := Decision{Snap: Snapshot{TokenID: 7, State: st}, Area: weedMarket(100, 90)}
+	a, ok := p.Next(context.Background(), stakeReader(), d) // stakeReader has no targets
+	if !ok || a.Kind != ActionTravel || a.DestArea != manhattan {
+		t.Fatalf("stranded raider with energy should leave the black market, got %+v ok=%v", a, ok)
 	}
 }
 
@@ -140,7 +153,7 @@ func TestProgramClampsStaleIndex(t *testing.T) {
 	_ = state.Set(9, 7, 3)
 	p := NewProgram(progFor(
 		ProgStep{Action: template.ActionTrade, BuyArea: manhattan, SellArea: amsterdam},
-	), state, nil, nil)
+	), state, nil, nil, manhattan)
 	st := pveState(manhattan, 5, 100000, 0)
 	d := Decision{Snap: Snapshot{TokenID: 9, State: st}, Area: weedMarket(100, 90)}
 	if a, ok := p.Next(context.Background(), stakeReader(), d); !ok || a.Kind != ActionPVE {

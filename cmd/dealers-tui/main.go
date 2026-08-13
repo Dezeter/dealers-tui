@@ -333,7 +333,7 @@ func buildProgram(cfg *config.Config, areaNames map[uint8]string, isAlly func(ui
 		}
 		return out
 	}
-	return dealer.NewProgram(steps, ps, isAlly, payBail), store
+	return dealer.NewProgram(steps, ps, isAlly, payBail, defBuy), store
 }
 
 // clampDiff bounds a template's heist difficulty to [-1, 2] (-1 = max affordable).

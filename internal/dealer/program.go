@@ -47,15 +47,18 @@ type Program struct {
 	arb  *PvEArbitrage // reused trade behaviour; its live params are set per trade step
 	cur  LiveParams    // per-step params fed to arb via its live() closure
 	sold *oncePerDay   // black-market loot sale tracker (pvp step, out of energy)
+	home uint8         // fallback area to leave the black market for (Manhattan)
 }
 
 // NewProgram builds the sequential program strategy. steps resolves a dealer's
 // compiled program live each tick (nil/empty = idle); state persists progress.
-func NewProgram(steps func(tokenID uint64) []ProgStep, state ProgState, isAlly func(uint64) bool, payBail func() bool) *Program {
+// home is a normal area (Manhattan) a stranded raider travels to so it can leave
+// the black market and act again.
+func NewProgram(steps func(tokenID uint64) []ProgStep, state ProgState, isAlly func(uint64) bool, payBail func() bool, home uint8) *Program {
 	if isAlly == nil {
 		isAlly = func(uint64) bool { return false }
 	}
-	p := &Program{steps: steps, state: state, isAlly: isAlly, payBail: payBail, sold: newOncePerDay()}
+	p := &Program{steps: steps, state: state, isAlly: isAlly, payBail: payBail, home: home, sold: newOncePerDay()}
 	p.arb = NewPvEArbitrageCfg(StrategyConfig{
 		IsAlly: isAlly, PayBail: payBail, HeistDifficulty: -1,
 		Live: func() LiveParams { return p.cur },
@@ -164,24 +167,44 @@ func (p *Program) runStep(ctx context.Context, r StrategyReader, d Decision, s P
 	return stepResult{} // ok=false → advance
 }
 
-// pvpStep attacks a present non-ally target; out of energy it retreats to the
-// black market and liquidates loot (once per drug per day), then yields.
+// pvpStep attacks a present non-ally target. Out of energy it liquidates loot in
+// the black market ONLY if it has any (never a pointless trip), then idles where
+// it is. With energy but no target it yields to the next step — but if it's
+// stranded in the black market (which has no targets), it first travels home so a
+// later tick can act, instead of sitting there idle with energy to spend.
 func (p *Program) pvpStep(ctx context.Context, r StrategyReader, d Decision) stepResult {
 	st := d.Snap.State
 	tokenID := d.Snap.TokenID
+	inBM := st.CurrentArea == bindings.BlackMarketArea
 	if st.DailyAttemptsRemaining == 0 {
-		if st.CurrentArea != bindings.BlackMarketArea {
-			return act(Action{Kind: ActionTravel, DestArea: bindings.BlackMarketArea}, false)
+		if hasLoot(st) {
+			if !inBM {
+				return act(Action{Kind: ActionTravel, DestArea: bindings.BlackMarketArea}, false)
+			}
+			if a, ok := p.sellLootOnce(st, tokenID); ok {
+				return act(a, false)
+			}
 		}
-		if a, ok := p.sellLootOnce(st, tokenID); ok {
-			return act(a, false)
-		}
-		return stepResult{}
+		return stepResult{} // nothing to sell / out of energy → idle in place
 	}
 	if a, ok := pvpAttackAction(ctx, r, st, tokenID, p.isAlly); ok {
 		return act(a, true) // an attack counts toward Count
 	}
-	return stepResult{} // no target → done, advance to the next step
+	// Energy but no target here. Escape the black-market dead-end so we can act.
+	if inBM && p.home != 0 && p.home != bindings.BlackMarketArea {
+		return act(Action{Kind: ActionTravel, DestArea: p.home}, false)
+	}
+	return stepResult{} // no target → advance to the next step
+}
+
+// hasLoot reports whether the dealer holds any drugs (raid loot to liquidate).
+func hasLoot(st *bindings.FullDealerState) bool {
+	for i := range st.DrugBalances {
+		if b := &st.DrugBalances[i]; b.Balance != nil && b.Balance.Sign() > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // heistRun drives one heist run to a clean bank: start at the difficulty, push to
