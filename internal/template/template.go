@@ -27,15 +27,24 @@ const (
 	ActionBreakout     = "breakout"      // escape jail (free daily attempt, then bail if the setting is on)
 	ActionClearStars   = "clear_stars"   // free wanted-poster heat clear (at heat ≥ 3)
 	ActionHeistCheckIn = "heist_checkin" // daily bank-heist season check-in (auto-joins, pays $CASH)
-	ActionMissions     = "missions"      // claim finished missions + accept the new epoch's
 	ActionTrade        = "trade"         // buy/haul/sell a drug between two zones
 	ActionPvP          = "pvp"           // attack a present non-ally target
 	ActionHeist        = "heist"         // run a heist at a difficulty and bank it
+
+	// Missions, split into separate concepts you can place independently:
+	ActionMissionsAccept = "missions_accept" // accept (check-in) the epoch's daily missions so they track
+	ActionMissionsFollow = "missions_follow" // do the activity an accepted mission needs (opportunistic)
+	ActionMissionsClaim  = "missions_claim"  // claim finished missions' rewards
+
+	// ActionMissions is the legacy combined step (claim + accept). Kept so older
+	// templates keep running; it's no longer offered when adding a new step.
+	ActionMissions = "missions"
 )
 
 // ActionOrder is the catalog order the editor cycles through.
 var ActionOrder = []string{
-	ActionTrade, ActionPvP, ActionHeist, ActionClearStars, ActionBreakout, ActionHeistCheckIn, ActionMissions,
+	ActionTrade, ActionPvP, ActionHeist, ActionClearStars, ActionBreakout, ActionHeistCheckIn,
+	ActionMissionsAccept, ActionMissionsFollow, ActionMissionsClaim,
 }
 
 // usesTrade / usesHeist report which params a given action reads (for the editor).
@@ -83,14 +92,15 @@ type Template struct {
 // (so existing per-dealer assignments, which reference templates by name, still
 // resolve) and reproduce roughly the old behaviour as explicit step programs.
 func Defaults() []Template {
-	safety := []Step{
+	head := []Step{
 		{Action: ActionBreakout},
 		{Action: ActionClearStars},
 		{Action: ActionHeistCheckIn},
-		{Action: ActionMissions},
+		{Action: ActionMissionsAccept},
 	}
-	pve := append(append([]Step(nil), safety...), Step{Action: ActionTrade})
-	pvp := append(append([]Step(nil), safety...), Step{Action: ActionPvP})
+	claim := Step{Action: ActionMissionsClaim}
+	pve := append(append(append([]Step(nil), head...), Step{Action: ActionTrade}), claim)
+	pvp := append(append(append([]Step(nil), head...), Step{Action: ActionPvP}), claim)
 	return []Template{
 		{Name: "pve", Steps: pve},
 		{Name: "pvp", Steps: pvp},

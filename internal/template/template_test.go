@@ -8,6 +8,15 @@ import (
 
 func tmp(t *testing.T) string { return filepath.Join(t.TempDir(), "templates.json") }
 
+func hasAction(steps []Step, action string) bool {
+	for _, s := range steps {
+		if s.Action == action {
+			return true
+		}
+	}
+	return false
+}
+
 func TestLoadSeedsDefaults(t *testing.T) {
 	p := tmp(t)
 	s := Load(p)
@@ -16,8 +25,8 @@ func TestLoadSeedsDefaults(t *testing.T) {
 		t.Fatalf("default names = %v, want [pve pvp manual]", names)
 	}
 	pve, ok := s.Get("pve")
-	if !ok || len(pve.Steps) == 0 || pve.Steps[len(pve.Steps)-1].Action != ActionTrade {
-		t.Fatalf("pve program should end in a trade step: %+v", pve.Steps)
+	if !ok || !hasAction(pve.Steps, ActionTrade) || !hasAction(pve.Steps, ActionMissionsClaim) {
+		t.Fatalf("pve program should include a trade and a claim step: %+v", pve.Steps)
 	}
 	if m, _ := s.Get("manual"); len(m.Steps) != 0 {
 		t.Errorf("manual should be an empty program, got %+v", m.Steps)

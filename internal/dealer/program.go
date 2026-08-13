@@ -142,9 +142,27 @@ func (p *Program) runStep(ctx context.Context, r StrategyReader, d Decision, s P
 				return act(a, true)
 			}
 		}
-	case template.ActionMissions:
+	case template.ActionMissions: // legacy combined (claim + accept)
 		if actionable(st) {
 			if a, ok := missionStep(ctx, r, tokenID); ok {
+				return act(a, true)
+			}
+		}
+	case template.ActionMissionsAccept:
+		if actionable(st) {
+			if a, ok := missionAcceptStep(ctx, r, tokenID); ok {
+				return act(a, true)
+			}
+		}
+	case template.ActionMissionsClaim:
+		if actionable(st) {
+			if a, ok := missionClaimStep(ctx, r, tokenID); ok {
+				return act(a, true)
+			}
+		}
+	case template.ActionMissionsFollow:
+		if actionable(st) {
+			if a, ok := missionFollowStep(ctx, r, d, p.isAlly, s.Drug); ok {
 				return act(a, true)
 			}
 		}

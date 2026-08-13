@@ -2,6 +2,7 @@ package dealer
 
 import (
 	"context"
+	"math/big"
 	"testing"
 
 	"dealers/internal/chain/bindings"
@@ -144,6 +145,35 @@ func TestProgramPvPEscapesBlackMarket(t *testing.T) {
 	a, ok := p.Next(context.Background(), stakeReader(), d) // stakeReader has no targets
 	if !ok || a.Kind != ActionTravel || a.DestArea != manhattan {
 		t.Fatalf("stranded raider with energy should leave the black market, got %+v ok=%v", a, ok)
+	}
+}
+
+func TestProgramMissionAcceptThenClaim(t *testing.T) {
+	// The accept step checks in a not-yet-accepted mission; once accepted and
+	// finished, the claim step claims it — the two concepts are independent steps.
+	r := &fakeReader{missions: []bindings.MissionStatus{{
+		TemplateID: big.NewInt(1),
+		Mission:    bindings.MissionTemplate{Cadence: bindings.CadenceDaily, Enabled: true, Target: 5},
+		CheckedIn:  false,
+	}}}
+	p := NewProgram(progFor(
+		ProgStep{Action: template.ActionMissionsAccept},
+		ProgStep{Action: template.ActionMissionsClaim},
+	), newMemState(), nil, nil, manhattan)
+	st := pveState(manhattan, 5, 100000, 0)
+	d := Decision{Snap: Snapshot{TokenID: 8, State: st}, Area: weedMarket(100, 90)}
+
+	if a, ok := p.Next(context.Background(), r, d); !ok || a.Kind != ActionMissionCheckIn {
+		t.Fatalf("accept step should check in, got %+v ok=%v", a, ok)
+	}
+	// Accepted + claimable now → accept idles, claim step claims.
+	r.missions = []bindings.MissionStatus{{
+		TemplateID: big.NewInt(1),
+		Mission:    bindings.MissionTemplate{Cadence: bindings.CadenceDaily, Enabled: true, Target: 5},
+		CheckedIn:  true, Claimable: true,
+	}}
+	if a, ok := p.Next(context.Background(), r, d); !ok || a.Kind != ActionMissionClaim {
+		t.Fatalf("claim step should claim the finished mission, got %+v ok=%v", a, ok)
 	}
 }
 

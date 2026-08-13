@@ -31,6 +31,70 @@ func classifyMetric(metric uint8) metricClass {
 	}
 }
 
+// missionAcceptStep accepts (checks in) the current epoch's missions so their
+// progress starts counting; idle once they're accepted. Best-effort.
+func missionAcceptStep(ctx context.Context, r StrategyReader, tokenID uint64) (Action, bool) {
+	ms, err := r.MissionStatus(ctx, tokenID)
+	if err != nil || len(ms) == 0 {
+		return Action{}, false
+	}
+	if bindings.NeedsCheckIn(ms) {
+		return Action{Kind: ActionMissionCheckIn}, true
+	}
+	return Action{}, false
+}
+
+// missionClaimStep claims the first claimable finished mission (daily before
+// weekly); idle when nothing is claimable. Best-effort.
+func missionClaimStep(ctx context.Context, r StrategyReader, tokenID uint64) (Action, bool) {
+	ms, err := r.MissionStatus(ctx, tokenID)
+	if err != nil {
+		return Action{}, false
+	}
+	if tpl, ok := bindings.FirstClaimable(ms); ok {
+		return Action{Kind: ActionMissionClaim, TemplateID: tpl}, true
+	}
+	return Action{}, false
+}
+
+// missionFollowStep does the activity an incomplete, ACCEPTED mission needs — a
+// PvE deal for PvE missions, a PvP attack for PvP missions (daily before weekly).
+// It's opportunistic: no target / can't afford / wrong area → idle, so "if it
+// completes it completes, if not it doesn't". Only accepted, unfinished missions
+// are followed; passive metrics (rep/infamy/heist/defend) are left to other steps.
+func missionFollowStep(ctx context.Context, r StrategyReader, d Decision, isAlly func(uint64) bool, drug string) (Action, bool) {
+	st := d.Snap.State
+	if st == nil || st.DailyAttemptsRemaining == 0 {
+		return Action{}, false
+	}
+	ms, err := r.MissionStatus(ctx, d.Snap.TokenID)
+	if err != nil {
+		return Action{}, false
+	}
+	for _, cadence := range []uint8{bindings.CadenceDaily, bindings.CadenceWeekly} {
+		for i := range ms {
+			m := &ms[i]
+			if m.Mission.Cadence != cadence || !m.Mission.Enabled || !m.CheckedIn || m.Claimed {
+				continue
+			}
+			if m.Progress >= m.Mission.Target {
+				continue
+			}
+			switch classifyMetric(m.Mission.Metric) {
+			case classPVE:
+				if a, ok := pveDealAction(ctx, r, st, d.Snap.TokenID, d.Area, drug); ok {
+					return a, true
+				}
+			case classPVP:
+				if a, ok := pvpAttackAction(ctx, r, st, d.Snap.TokenID, isAlly); ok {
+					return a, true
+				}
+			}
+		}
+	}
+	return Action{}, false
+}
+
 // missionSteer implements "follow the missions": if an incomplete mission needs
 // an activity the running strategy (its primary class) does NOT itself produce,
 // do that activity instead — the mission takes priority over the strategy.

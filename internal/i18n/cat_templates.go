@@ -52,12 +52,15 @@ func init() {
 		"templates.default_suffix":    {"%s (по умолчанию)", "%s (default)"},
 
 		// action names
-		"templates.act_trade":         {"Торговать", "Trade"},
-		"templates.act_pvp":           {"PvP-рейд", "PvP raid"},
-		"templates.act_heist":         {"Хайст", "Heist"},
-		"templates.act_clear_stars":   {"Снять звёзды", "Clear stars"},
-		"templates.act_breakout":      {"Побег из тюрьмы", "Jail breakout"},
-		"templates.act_heist_checkin": {"Чек-ин сезона", "Heist check-in"},
-		"templates.act_missions":      {"Миссии", "Missions"},
+		"templates.act_trade":           {"Торговать", "Trade"},
+		"templates.act_pvp":             {"PvP-рейд", "PvP raid"},
+		"templates.act_heist":           {"Хайст", "Heist"},
+		"templates.act_clear_stars":     {"Снять звёзды", "Clear stars"},
+		"templates.act_breakout":        {"Побег из тюрьмы", "Jail breakout"},
+		"templates.act_heist_checkin":   {"Чек-ин сезона", "Heist check-in"},
+		"templates.act_missions":        {"Миссии", "Missions"},
+		"templates.act_missions_accept": {"Принять миссии", "Accept missions"},
+		"templates.act_missions_follow": {"Следовать миссиям", "Follow missions"},
+		"templates.act_missions_claim":  {"Забрать награды", "Claim rewards"},
 	})
 }
