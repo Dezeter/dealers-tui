@@ -309,6 +309,10 @@ func (a App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return a, a.fleet.Refresh()
 
+	case claimDoneMsg:
+		a.fleet.notice = claimSummary(msg.results)
+		return a, a.fleet.Refresh()
+
 	case snapshotsMsg:
 		a.balance = msg.balance
 		a.alerts = dealer.FleetAlerts(msg.snaps, msg.balance, a.deps.MinRunwayWei)
@@ -384,6 +388,15 @@ func (a App) updateFleetKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		a.fleet.notice = statusBarStyle.Render(i18n.T("fleet.notice.checking_in"))
 		return a, checkInAllCmd(a.deps, a.fleet.snaps)
+	case "C":
+		// Claim ended-season rewards across the whole fleet (gas only; pays ETH in,
+		// skips seasons that aren't due via a dry-run so no gas is wasted).
+		if a.deps.Manager == nil {
+			a.fleet.notice = errStyle.Render(i18n.T("fleet.notice.ro_claim"))
+			return a, nil
+		}
+		a.fleet.notice = statusBarStyle.Render(i18n.T("fleet.notice.claiming"))
+		return a, claimAllCmd(a.deps, a.fleet.snaps)
 	case "s":
 		// Cycle the selected dealer's autopilot strategy (farm→pve→pvp→manual).
 		if a.deps.Strategies == nil {

@@ -25,6 +25,8 @@ const bankHeistABIJSON = `[
    "inputs":[{"name":"tokenId","type":"uint256"}],"outputs":[]},
   {"type":"function","name":"enter","stateMutability":"nonpayable",
    "inputs":[{"name":"tokenId","type":"uint256"}],"outputs":[]},
+  {"type":"function","name":"claim","stateMutability":"nonpayable",
+   "inputs":[{"name":"seasonId","type":"uint256"},{"name":"tokenId","type":"uint256"}],"outputs":[]},
   {"type":"function","name":"entered","stateMutability":"view",
    "inputs":[{"name":"seasonId","type":"uint256"},{"name":"tokenId","type":"uint256"}],
    "outputs":[{"name":"","type":"bool"}]},
@@ -54,6 +56,13 @@ func PackCheckIn(tokenID uint64) ([]byte, error) {
 // (pays the $CASH entry fee) before checkIn works for it.
 func PackEnter(tokenID uint64) ([]byte, error) {
 	return bankHeistABI.Pack("enter", new(big.Int).SetUint64(tokenID))
+}
+
+// PackClaim builds the season-reward claim calldata for one dealer. Once a season
+// has ended, claim(seasonId, tokenId) pays that dealer's ETH reward to the owner
+// (emits Claimed(seasonId, tokenId, to, amount)); it's gas-only on our side.
+func PackClaim(seasonID, tokenID uint64) ([]byte, error) {
+	return bankHeistABI.Pack("claim", new(big.Int).SetUint64(seasonID), new(big.Int).SetUint64(tokenID))
 }
 
 // NeedsHeistCheckIn reports whether a dealer should run today's bank-heist
@@ -123,6 +132,37 @@ func (r *Reader) CanEnterSeason(ctx context.Context, owner common.Address, token
 			return false, nil // definitive: the entry would revert
 		}
 		return false, err // inconclusive — let the caller proceed
+	}
+	return true, nil
+}
+
+// CanClaimSeason simulates claim(seasonId, tokenId) as a read-only eth_call from
+// owner (the AGW that is msg.sender for the dealer's real actions) to tell whether
+// a season reward is actually claimable right now — there's no public getter for
+// pending rewards, so we ask the contract by dry-running the claim. Because the AGW
+// is msg.sender on both the real tx and this From=owner simulation, a simulated
+// revert reliably predicts a real one. Returns:
+//
+//	(true,  nil) claim would succeed → a reward is due
+//	(false, nil) claim would REVERT (nothing to claim / already claimed / season not
+//	             ended yet) — skip it, save the gas
+//	(false, err) inconclusive (RPC/transport error) — caller decides
+func (r *Reader) CanClaimSeason(ctx context.Context, owner common.Address, seasonID, tokenID uint64) (bool, error) {
+	addr := r.cl.Net.Contracts.DealersBankHeist
+	if addr == (common.Address{}) {
+		return false, fmt.Errorf("bank heist contract not deployed")
+	}
+	data, err := PackClaim(seasonID, tokenID)
+	if err != nil {
+		return false, err
+	}
+	// claim() may return nothing, so an empty result with no error means "would
+	// pass"; call the client directly (r.call treats empty output as an error).
+	if _, err := r.cl.CallContract(ctx, ethereum.CallMsg{From: owner, To: &addr, Data: data}); err != nil {
+		if isRevert(err) {
+			return false, nil // definitive: nothing claimable for this (season, dealer)
+		}
+		return false, err // inconclusive — let the caller decide
 	}
 	return true, nil
 }

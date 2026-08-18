@@ -774,6 +774,22 @@ func (m *Manager) CheckIn(ctx context.Context, tokenID uint64) error {
 	return err
 }
 
+// ClaimSeason collects a dealer's ended-season reward (DealersBankHeist.claim).
+// It's gas-only on our side and pays the ETH reward to the owner AGW. Callers
+// should preflight with Reader.CanClaimSeason so a not-yet-due season doesn't burn
+// gas on a guaranteed revert.
+func (m *Manager) ClaimSeason(ctx context.Context, tokenID, seasonID uint64) error {
+	to := m.net.Contracts.DealersBankHeist
+	if to == (common.Address{}) {
+		return fmt.Errorf("season claim not available on this network")
+	}
+	data, err := bindings.PackClaim(seasonID, tokenID)
+	if err != nil {
+		return fmt.Errorf("pack claim: %w", err)
+	}
+	return m.sendSingleTx(ctx, to, data, nil, tokenID, "season_claim", fmt.Sprintf("claimed season %d reward", seasonID))
+}
+
 // ResetAttempts pays purchaseAttemptReset to refill the dealer's daily attempts.
 func (m *Manager) ResetAttempts(ctx context.Context, tokenID uint64) error {
 	fee, err := m.attemptResetFee(ctx)

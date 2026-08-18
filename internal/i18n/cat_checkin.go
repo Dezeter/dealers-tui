@@ -11,5 +11,14 @@ func init() {
 		"checkin.jailed":       {"в тюрьме", "jailed"},
 		"checkin.uninit":       {"не иниц.", "uninit"},
 		"checkin.errors":       {"ошибки", "errors"},
+
+		// Batch season-reward claim (the fleet 'C' action notice).
+		"claim.none":    {"награды: нет дилеров", "rewards: no dealers"},
+		"claim.prefix":  {"награды: ", "rewards: "},
+		"claim.claimed": {"собрано", "claimed"},
+		"claim.nothing": {"нечего", "nothing"},
+		"claim.uninit":  {"не иниц.", "uninit"},
+		"claim.errors":  {"ошибки", "errors"},
+		"claim.seasons": {"сезонов", "seasons"},
 	})
 }
