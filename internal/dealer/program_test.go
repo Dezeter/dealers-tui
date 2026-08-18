@@ -148,6 +148,25 @@ func TestProgramPvPEscapesBlackMarket(t *testing.T) {
 	}
 }
 
+func TestProgramPvPTradesWhenNoTarget(t *testing.T) {
+	// A raider with energy but no target must deal drugs (stay productive) rather
+	// than idle — so a pvp program with no trade step still spends the dealer's
+	// energy. The fallback trade must not count toward the raid Count or advance.
+	state := newMemState()
+	p := NewProgram(progFor(
+		ProgStep{Action: template.ActionPvP, BuyArea: manhattan, SellArea: amsterdam, Count: 3},
+	), state, nil, nil, manhattan)
+	st := pveState(manhattan, 5, 100000, 0) // on Manhattan, energy, no loot
+	d := Decision{Snap: Snapshot{TokenID: 10, State: st}, Area: weedMarket(100, 90)}
+	a, ok := p.Next(context.Background(), stakeReader(), d) // stakeReader has no targets
+	if !ok || a.Kind != ActionPVE || a.Hustle != bindings.HustleBuy {
+		t.Fatalf("raider with energy and no target should trade (buy weed), got %+v ok=%v", a, ok)
+	}
+	if step, reps := state.Get(10); step != 0 || reps != 0 {
+		t.Fatalf("a fallback trade shouldn't advance or count: pos=(%d,%d), want (0,0)", step, reps)
+	}
+}
+
 func TestProgramMissionAcceptThenClaim(t *testing.T) {
 	// The accept step checks in a not-yet-accepted mission; once accepted and
 	// finished, the claim step claims it — the two concepts are independent steps.

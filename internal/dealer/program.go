@@ -44,10 +44,11 @@ type Program struct {
 	isAlly  func(uint64) bool
 	payBail func() bool
 
-	arb  *PvEArbitrage // reused trade behaviour; its live params are set per trade step
-	cur  LiveParams    // per-step params fed to arb via its live() closure
-	sold *oncePerDay   // black-market loot sale tracker (pvp step, out of energy)
-	home uint8         // fallback area to leave the black market for (Manhattan)
+	arb     *PvEArbitrage // reused trade behaviour; its live params are set per trade step
+	cur     LiveParams    // per-step params fed to arb via its live() closure
+	sold    *oncePerDay   // black-market loot sale tracker (pvp step, out of energy)
+	heistCk *dailyLimiter // bounds heist-checkin retries so a dealer that can't afford the season entry advances
+	home    uint8         // fallback area to leave the black market for (Manhattan)
 }
 
 // NewProgram builds the sequential program strategy. steps resolves a dealer's
@@ -58,7 +59,7 @@ func NewProgram(steps func(tokenID uint64) []ProgStep, state ProgState, isAlly f
 	if isAlly == nil {
 		isAlly = func(uint64) bool { return false }
 	}
-	p := &Program{steps: steps, state: state, isAlly: isAlly, payBail: payBail, home: home, sold: newOncePerDay()}
+	p := &Program{steps: steps, state: state, isAlly: isAlly, payBail: payBail, home: home, sold: newOncePerDay(), heistCk: newDailyLimiter()}
 	p.arb = NewPvEArbitrageCfg(StrategyConfig{
 		IsAlly: isAlly, PayBail: payBail, HeistDifficulty: -1,
 		Live: func() LiveParams { return p.cur },
@@ -138,7 +139,7 @@ func (p *Program) runStep(ctx context.Context, r StrategyReader, d Decision, s P
 		}
 	case template.ActionHeistCheckIn:
 		if actionable(st) {
-			if a, ok := heistCheckInStep(ctx, r, tokenID, nil); ok {
+			if a, ok := heistCheckInStep(ctx, r, tokenID, p.heistCk); ok {
 				return act(a, true)
 			}
 		}
@@ -175,7 +176,7 @@ func (p *Program) runStep(ctx context.Context, r StrategyReader, d Decision, s P
 		}
 	case template.ActionPvP:
 		if actionable(st) {
-			return p.pvpStep(ctx, r, d)
+			return p.pvpStep(ctx, r, d, s)
 		}
 	case template.ActionHeist:
 		if actionable(st) {
@@ -187,10 +188,15 @@ func (p *Program) runStep(ctx context.Context, r StrategyReader, d Decision, s P
 
 // pvpStep attacks a present non-ally target. Out of energy it liquidates loot in
 // the black market ONLY if it has any (never a pointless trip), then idles where
-// it is. With energy but no target it yields to the next step — but if it's
-// stranded in the black market (which has no targets), it first travels home so a
-// later tick can act, instead of sitting there idle with energy to spend.
-func (p *Program) pvpStep(ctx context.Context, r StrategyReader, d Decision) stepResult {
+// it is. With energy but NO target it deals drugs instead of idling — the same
+// weed run the trade step uses (the step's own zones, or the Manhattan default) —
+// so a raider whose program has no trade step still spends its energy, keeps
+// circulating Manhattan↔Amsterdam to re-probe targets every tick, and leaves the
+// black-market dead-end on its own (the trade route heads to the buy zone). These
+// fallback trades DON'T count toward the raid Count (rep=false); the step advances
+// only once energy is spent and any loot liquidated — exactly like the old raider
+// that fell back to trading whenever no target was in range.
+func (p *Program) pvpStep(ctx context.Context, r StrategyReader, d Decision, s ProgStep) stepResult {
 	st := d.Snap.State
 	tokenID := d.Snap.TokenID
 	inBM := st.CurrentArea == bindings.BlackMarketArea
@@ -208,11 +214,18 @@ func (p *Program) pvpStep(ctx context.Context, r StrategyReader, d Decision) ste
 	if a, ok := pvpAttackAction(ctx, r, st, tokenID, p.isAlly); ok {
 		return act(a, true) // an attack counts toward Count
 	}
-	// Energy but no target here. Escape the black-market dead-end so we can act.
-	if inBM && p.home != 0 && p.home != bindings.BlackMarketArea {
-		return act(Action{Kind: ActionTravel, DestArea: p.home}, false)
+	// Energy but no target here → deal drugs to stay productive. buildProgram already
+	// resolves every step's zones to Manhattan/Amsterdam; fall back to home for a
+	// hand-built step with no buy zone so the raider still heads somewhere real.
+	buy := s.BuyArea
+	if buy == 0 {
+		buy = p.home
 	}
-	return stepResult{} // no target → advance to the next step
+	p.cur = LiveParams{BuyArea: buy, SellArea: s.SellArea, Drug: s.Drug, HeistDifficulty: -1}
+	if a, ok := p.arb.tradeCore(ctx, r, d); ok {
+		return act(a, false) // fallback trade/haul — doesn't count toward the raid Count
+	}
+	return stepResult{} // truly nothing to do → advance to the next step
 }
 
 // hasLoot reports whether the dealer holds any drugs (raid loot to liquidate).
