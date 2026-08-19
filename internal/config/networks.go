@@ -71,13 +71,13 @@ var mainnetProfile = Network{
 		DEDrugRegistry:        common.HexToAddress("0xb89125a33eb5FD401a9ef66DECe2A6a060989CcC"),
 		DEAreaRegistry:        common.HexToAddress("0xe7598E61738921967f888736A1977b80Da526510"),
 		DealersClaims:         common.HexToAddress("0xdBDD44758Deb81B3D88766c6a6fc439960Ea4Ba8"),
-		DealersMulticall:      common.HexToAddress("0x39249C625D7a6C952A5aC389510839eB1bB33099"),
+		DealersMulticall:      common.HexToAddress("0x01C186418FE87F53E1A95dE49CCf13D501868669"), // v1.3 (Bank Heist V2)
 		DealersPaymentHandler: common.HexToAddress("0x798E0f15A34F491eF4A69E9CC626A625bb80A504"),
 		DealersRandomness:     common.HexToAddress("0x76f965BdB22f482503Cf0de3C67394d987da400D"),
 		DealersChatFactory:    common.HexToAddress("0xB13A49F39eD9146A89d917b4DB4beF1c143e2FFe"),
 		DealerRendererSVG:     common.HexToAddress("0x8c99b0c302E774CF50ba6B4763dcB15d84ede31A"),
 		DealerRendererHTML:    common.HexToAddress("0x889F5a12DaB04b3f5bB60672FDD599be8A0949d5"),
-		DealersBankHeist:      common.HexToAddress("0xE219B3E8909Ebc26404080618339b947075FAF2B"),
+		DealersBankHeist:      common.HexToAddress("0x987779Fd28E24D9cBeB7c22Eb1AFE1B7771ED5e1"), // V2 (heist contract == reward vault)
 		DealersMissions:       common.HexToAddress("0xaf461430D2e2cCd89CFE3Ee335F77a8BF3031F5b"),
 	},
 }

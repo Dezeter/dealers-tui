@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/ethereum/go-ethereum/common"
 )
 
 func writeTemp(t *testing.T, body string) string {
@@ -113,7 +115,7 @@ func TestMainnetProfileResolves(t *testing.T) {
 	if !c.IsMainnet() || c.Network().ChainID != 2741 {
 		t.Errorf("mainnet not resolved: mainnet=%v chain=%d", c.IsMainnet(), c.Network().ChainID)
 	}
-	if c.Network().Contracts.DealersMulticall.Hex() != "0x39249C625D7a6C952A5aC389510839eB1bB33099" {
+	if c.Network().Contracts.DealersMulticall != common.HexToAddress("0x01C186418FE87F53E1A95dE49CCf13D501868669") {
 		t.Errorf("mainnet multicall addr wrong: %s", c.Network().Contracts.DealersMulticall.Hex())
 	}
 }
