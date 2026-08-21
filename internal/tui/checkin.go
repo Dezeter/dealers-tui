@@ -77,7 +77,12 @@ func runCheckInAll(ctx context.Context, deps Deps, snaps []dealer.Snapshot, nowU
 				}
 			}
 			if err := deps.Manager.CheckIn(ctx, s.TokenID); err != nil {
-				if strings.Contains(err.Error(), "reverted on chain") {
+				// An on-chain revert (mined-and-reverted OR a gas-estimate revert) on
+				// check-in is benign: the dealer already checked in today or isn't
+				// eligible yet. Treat it as a skip, not an error, so a routine
+				// already-done state doesn't show up as a scary error count.
+				msg := err.Error()
+				if strings.Contains(msg, "reverted on chain") || strings.Contains(msg, "execution reverted") {
 					r.status = ciSkipped // already checked in today, or season not open
 				} else {
 					r.status, r.err = ciError, err

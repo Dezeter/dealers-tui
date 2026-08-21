@@ -742,9 +742,11 @@ func (m *Manager) CheckIn(ctx context.Context, tokenID uint64) error {
 		return fmt.Errorf("check-in not available on this network")
 	}
 	// A new season requires a one-time enter() before checkIn works — auto-join if
-	// this dealer hasn't entered the current season. Without this the first check-in
-	// of every season reverts. In Bank Heist V2 enter() is payable: it costs an ETH
-	// entry fee read live from the season (SeasonEntryFee), sent as the tx value.
+	// this dealer hasn't entered the current season. In Bank Heist V2 enter() is
+	// payable (an ETH entry fee read live via SeasonEntryFee, sent as the tx value)
+	// AND it records that day's check-in itself: after entering, focusState shows
+	// count=1/lastDay=today, so a follow-up checkIn the same day reverts. So when we
+	// enter here we're done — return without the standalone checkIn.
 	if m.reader != nil {
 		if season, err := m.reader.ActiveSeason(ctx); err == nil {
 			if joined, err := m.reader.Entered(ctx, season, tokenID); err == nil && !joined {
@@ -776,6 +778,9 @@ func (m *Manager) CheckIn(ctx context.Context, tokenID uint64) error {
 				if err := m.sendSingleTx(ctx, to, data, fee, tokenID, "season_enter", fmt.Sprintf("entered heist season %d (%s wei)", season, fee)); err != nil {
 					return fmt.Errorf("enter season: %w", err)
 				}
+				// enter() already counted today's check-in — refresh the cache and stop.
+				m.reader.InvalidateCheckins()
+				return nil
 			}
 		}
 	}
