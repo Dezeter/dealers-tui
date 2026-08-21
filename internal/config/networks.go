@@ -71,7 +71,7 @@ var mainnetProfile = Network{
 		DEDrugRegistry:        common.HexToAddress("0xb89125a33eb5FD401a9ef66DECe2A6a060989CcC"),
 		DEAreaRegistry:        common.HexToAddress("0xe7598E61738921967f888736A1977b80Da526510"),
 		DealersClaims:         common.HexToAddress("0xdBDD44758Deb81B3D88766c6a6fc439960Ea4Ba8"),
-		DealersMulticall:      common.HexToAddress("0x01C186418FE87F53E1A95dE49CCf13D501868669"), // v1.3 (Bank Heist V2)
+		DealersMulticall:      common.HexToAddress("0x0728c4c42eE90909148cb39eeFFf811037D08762"), // paginated getPotentialTargets (Bank Heist V2)
 		DealersPaymentHandler: common.HexToAddress("0x798E0f15A34F491eF4A69E9CC626A625bb80A504"),
 		DealersRandomness:     common.HexToAddress("0x76f965BdB22f482503Cf0de3C67394d987da400D"),
 		DealersChatFactory:    common.HexToAddress("0xB13A49F39eD9146A89d917b4DB4beF1c143e2FFe"),

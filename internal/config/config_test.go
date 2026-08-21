@@ -115,7 +115,7 @@ func TestMainnetProfileResolves(t *testing.T) {
 	if !c.IsMainnet() || c.Network().ChainID != 2741 {
 		t.Errorf("mainnet not resolved: mainnet=%v chain=%d", c.IsMainnet(), c.Network().ChainID)
 	}
-	if c.Network().Contracts.DealersMulticall != common.HexToAddress("0x01C186418FE87F53E1A95dE49CCf13D501868669") {
+	if c.Network().Contracts.DealersMulticall != common.HexToAddress("0x0728c4c42eE90909148cb39eeFFf811037D08762") {
 		t.Errorf("mainnet multicall addr wrong: %s", c.Network().Contracts.DealersMulticall.Hex())
 	}
 }
