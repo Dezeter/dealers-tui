@@ -279,6 +279,28 @@ func (c *dayCounter) take(key string, cap int) bool {
 	return true
 }
 
+// reached reports whether key has already hit cap today WITHOUT counting a use —
+// a peek, so a capped step can be skipped before it runs. Paired with add, which
+// records a use only once the step actually acts.
+func (c *dayCounter) reached(key string, cap int) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if today := utcDay(); today != c.day {
+		c.day, c.n = today, map[string]int{}
+	}
+	return c.n[key] >= cap
+}
+
+// add records one use of key today (see reached).
+func (c *dayCounter) add(key string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if today := utcDay(); today != c.day {
+		c.day, c.n = today, map[string]int{}
+	}
+	c.n[key]++
+}
+
 // heistCheckInAttemptsPerDay bounds how many times the autopilot re-attempts the
 // bank-heist check-in per dealer per UTC day. A check-in that keeps failing — most
 // often a dealer too poor to pay the one-time season enter() $CASH fee — must not

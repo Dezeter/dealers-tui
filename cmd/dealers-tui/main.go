@@ -31,7 +31,6 @@ import (
 	"dealers/internal/engine"
 	"dealers/internal/i18n"
 	"dealers/internal/preflight"
-	"dealers/internal/progstate"
 	"dealers/internal/settings"
 	"dealers/internal/store"
 	"dealers/internal/template"
@@ -261,10 +260,7 @@ func runFleet(args []string) error {
 		payBail := func() bool { return deps.Settings.Get(settings.KeyPayBail) }
 		tmpls := template.Load("templates.json")
 		deps.Templates = tmpls
-		// Per-dealer program position (which step, how many reps) — persisted so the
-		// sequential program resumes across restarts.
-		progState := progstate.Load("progress.json")
-		strategy, stratStore := buildProgram(b.cfg, deps.AreaNames, deps.Allies.IsAlly, payBail, tmpls, progAdapter{progState})
+		strategy, stratStore := buildProgram(b.cfg, deps.AreaNames, deps.Allies.IsAlly, payBail, tmpls)
 		deps.Strategies = stratStore
 		eng := engine.New(b.cl, st, sender, ids, strategy, fileLogger())
 		eng.Manager().SetDrugNames(drugNames)
@@ -285,21 +281,13 @@ func runFleet(args []string) error {
 	return err
 }
 
-// progAdapter adapts a progstate.Store to the dealer.ProgState interface.
-type progAdapter struct{ s *progstate.Store }
-
-func (a progAdapter) Get(id uint64) (int, int) { p := a.s.Get(id); return p.Step, p.Reps }
-func (a progAdapter) Set(id uint64, step, reps int) error {
-	return a.s.Set(id, progstate.Pos{Step: step, Reps: reps})
-}
-
-// buildProgram wires the sequential Program strategy: it resolves each dealer's
+// buildProgram wires the priority-list Program strategy: it resolves each dealer's
 // assigned template LIVE from the autostrat store (so an in-UI reassignment with
 // 's' takes effect next tick) and compiles the template's steps into ProgSteps,
 // resolving trade zone NAMES to area ids (defaulting to Manhattan/Amsterdam; a
 // typo just trades the default route). Editing a template applies next tick too,
 // since the steps are re-read every tick.
-func buildProgram(cfg *config.Config, areaNames map[uint8]string, isAlly func(uint64) bool, payBail func() bool, ts *template.Store, ps dealer.ProgState) (dealer.Strategy, *autostrat.Store) {
+func buildProgram(cfg *config.Config, areaNames map[uint8]string, isAlly func(uint64) bool, payBail func() bool, ts *template.Store) (dealer.Strategy, *autostrat.Store) {
 	autostrat.Order = ts.Names() // the fleet 's' selector cycles the template names
 	store := autostrat.Load("strategies.json", cfg.AutopilotStrategy, cfg.DealerStrategies)
 	defBuy, _ := findAreaID(areaNames, "manhattan")
@@ -333,7 +321,7 @@ func buildProgram(cfg *config.Config, areaNames map[uint8]string, isAlly func(ui
 		}
 		return out
 	}
-	return dealer.NewProgram(steps, ps, isAlly, payBail, defBuy), store
+	return dealer.NewProgram(steps, isAlly, payBail, defBuy), store
 }
 
 // clampDiff bounds a template's heist difficulty to [-1, 2] (-1 = max affordable).
