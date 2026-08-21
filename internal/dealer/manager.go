@@ -265,6 +265,12 @@ func bigSigned(v *big.Int) string {
 // send 0 (the $CASH stake is debited in-game, not ETH).
 var HeistETHAddon = big.NewInt(1_000_000_000_000_000) // 0.001 ETH
 
+// maxSeasonEntryFeeWei caps the ETH a bank-heist season enter() may auto-pay. The
+// live fee is read from the season (SeasonEntryFee); this is a defensive ceiling so
+// a misread or a future season with a wild fee can't silently drain ETH. The known
+// V2 fee is 0.001 ETH — 0.01 leaves headroom while blocking anything unreasonable.
+var maxSeasonEntryFeeWei = big.NewInt(10_000_000_000_000_000) // 0.01 ETH
+
 // heistMeta is persisted in pending_actions.meta_json for a heist stage round.
 type heistMeta struct {
 	HeistID uint64 `json:"heist_id"`
@@ -735,27 +741,39 @@ func (m *Manager) CheckIn(ctx context.Context, tokenID uint64) error {
 	if to == (common.Address{}) {
 		return fmt.Errorf("check-in not available on this network")
 	}
-	// A new season requires a one-time enter() (pays the $CASH entry fee) before
-	// checkIn works — auto-join if this dealer hasn't entered the current season.
-	// Without this the first check-in of every season reverts.
+	// A new season requires a one-time enter() before checkIn works — auto-join if
+	// this dealer hasn't entered the current season. Without this the first check-in
+	// of every season reverts. In Bank Heist V2 enter() is payable: it costs an ETH
+	// entry fee read live from the season (SeasonEntryFee), sent as the tx value.
 	if m.reader != nil {
 		if season, err := m.reader.ActiveSeason(ctx); err == nil {
 			if joined, err := m.reader.Entered(ctx, season, tokenID); err == nil && !joined {
-				// Preflight the entry so we don't burn gas on a guaranteed revert —
-				// almost always a dealer too poor to pay the one-time $CASH season
-				// fee. Only a DEFINITIVE simulated revert (can, err := …; err==nil &&
-				// !can) skips; an inconclusive read (err!=nil) falls through and
-				// attempts as before, so an RPC hiccup never blocks a real check-in.
+				fee, err := m.reader.SeasonEntryFee(ctx, season)
+				if err != nil {
+					return fmt.Errorf("read season %d entry fee: %w", season, err)
+				}
+				// Sanity cap: never send a surprising amount of ETH if a season ever
+				// reports an outsized fee (misread / contract change). 0.001 ETH is the
+				// known fee; 0.01 leaves generous headroom while blocking anything wild.
+				if fee.Cmp(maxSeasonEntryFeeWei) > 0 {
+					return fmt.Errorf("skip check-in: dealer %d season entry fee %s wei exceeds the %s wei cap",
+						tokenID, fee, maxSeasonEntryFeeWei)
+				}
+				// Preflight the entry (with the ETH value) so we don't burn gas on a
+				// guaranteed revert — e.g. a dealer below the rep gate. Only a DEFINITIVE
+				// simulated revert (perr==nil && !can) skips; an inconclusive read
+				// (perr!=nil) falls through and attempts anyway, so an RPC hiccup never
+				// blocks a real check-in.
 				if m.sender != nil {
-					if can, perr := m.reader.CanEnterSeason(ctx, m.sender.AGW(), tokenID); perr == nil && !can {
-						return fmt.Errorf("skip check-in: dealer %d can't afford the $CASH season entry fee", tokenID)
+					if can, perr := m.reader.CanEnterSeason(ctx, m.sender.AGW(), tokenID, fee); perr == nil && !can {
+						return fmt.Errorf("skip check-in: dealer %d can't enter season %d (rep gate or insufficient ETH)", tokenID, season)
 					}
 				}
 				data, err := bindings.PackEnter(tokenID)
 				if err != nil {
 					return fmt.Errorf("pack enter: %w", err)
 				}
-				if err := m.sendSingleTx(ctx, to, data, nil, tokenID, "season_enter", fmt.Sprintf("entered heist season %d", season)); err != nil {
+				if err := m.sendSingleTx(ctx, to, data, fee, tokenID, "season_enter", fmt.Sprintf("entered heist season %d (%s wei)", season, fee)); err != nil {
 					return fmt.Errorf("enter season: %w", err)
 				}
 			}

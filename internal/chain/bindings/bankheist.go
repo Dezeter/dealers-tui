@@ -23,8 +23,10 @@ import (
 const bankHeistABIJSON = `[
   {"type":"function","name":"checkIn","stateMutability":"nonpayable",
    "inputs":[{"name":"tokenId","type":"uint256"}],"outputs":[]},
-  {"type":"function","name":"enter","stateMutability":"nonpayable",
+  {"type":"function","name":"enter","stateMutability":"payable",
    "inputs":[{"name":"tokenId","type":"uint256"}],"outputs":[]},
+  {"type":"function","name":"getSeason","stateMutability":"view",
+   "inputs":[{"name":"seasonId","type":"uint256"}],"outputs":[]},
   {"type":"function","name":"claim","stateMutability":"nonpayable",
    "inputs":[{"name":"seasonId","type":"uint256"},{"name":"tokenId","type":"uint256"}],"outputs":[]},
   {"type":"function","name":"entered","stateMutability":"view",
@@ -53,9 +55,39 @@ func PackCheckIn(tokenID uint64) ([]byte, error) {
 }
 
 // PackEnter builds the season-entry calldata. A dealer must enter() a season once
-// (pays the $CASH entry fee) before checkIn works for it.
+// before checkIn works for it. In Bank Heist V2 enter() is payable and requires an
+// ETH entry fee (read live via SeasonEntryFee) — pass that as the tx value.
 func PackEnter(tokenID uint64) ([]byte, error) {
 	return bankHeistABI.Pack("enter", new(big.Int).SetUint64(tokenID))
+}
+
+// seasonEntryFeeWord is the index of the entry-fee field (a uint256, in wei) within
+// the getSeason(seasonId) return tuple — the 2nd word (offset 32). Verified live on
+// mainnet V2 (season 0 fee = 0.001 ETH sits at word[1]).
+const seasonEntryFeeWord = 1
+
+// SeasonEntryFee reads the ETH entry fee (wei) for a season from getSeason(seasonId).
+// We only need one field of the season struct, so we call raw and slice out the
+// fee word rather than binding the whole (unstable) tuple. Returns an error if the
+// contract isn't deployed or the response is too short to hold the field.
+func (r *Reader) SeasonEntryFee(ctx context.Context, seasonID uint64) (*big.Int, error) {
+	addr := r.cl.Net.Contracts.DealersBankHeist
+	if addr == (common.Address{}) {
+		return nil, fmt.Errorf("bank heist contract not deployed")
+	}
+	data, err := bankHeistABI.Pack("getSeason", new(big.Int).SetUint64(seasonID))
+	if err != nil {
+		return nil, fmt.Errorf("pack getSeason: %w", err)
+	}
+	out, err := r.cl.CallContract(ctx, ethereum.CallMsg{To: &addr, Data: data})
+	if err != nil {
+		return nil, err
+	}
+	lo := seasonEntryFeeWord * 32
+	if len(out) < lo+32 {
+		return nil, fmt.Errorf("getSeason returned %d bytes, too short for the fee field", len(out))
+	}
+	return new(big.Int).SetBytes(out[lo : lo+32]), nil
 }
 
 // PackClaim builds the season-reward claim calldata for one dealer. Once a season
@@ -105,18 +137,18 @@ func (r *Reader) Entered(ctx context.Context, seasonID, tokenID uint64) (bool, e
 func (r *Reader) BankHeistAddr() common.Address { return r.cl.Net.Contracts.DealersBankHeist }
 
 // CanEnterSeason simulates enter(tokenId) as a read-only eth_call from owner (the
-// on-chain msg.sender for the dealer's AGW actions) to tell whether the one-time
-// season entry would go through — chiefly, whether the dealer can afford the $CASH
-// entry fee, which has no public getter. Because the AGW is the msg.sender on both
-// the real tx and this From=owner simulation, a simulated revert reliably predicts
-// a real one. Returns:
+// on-chain msg.sender for the dealer's AGW actions), carrying the same ETH value the
+// real tx would send, to tell whether the one-time season entry would go through —
+// e.g. whether the dealer meets the rep gate and the owner can cover the ETH entry
+// fee. Because the AGW is the msg.sender on both the real tx and this From=owner
+// simulation, a simulated revert reliably predicts a real one. Returns:
 //
 //	(true,  nil) enter would succeed
-//	(false, nil) enter would REVERT (e.g. not enough $CASH) — skip it, save the gas
+//	(false, nil) enter would REVERT (rep gate / insufficient value) — skip, save gas
 //	(false, err) inconclusive (RPC/transport error) — caller should attempt as usual
 //
 // so an ambiguous read never wrongly blocks a check-in.
-func (r *Reader) CanEnterSeason(ctx context.Context, owner common.Address, tokenID uint64) (bool, error) {
+func (r *Reader) CanEnterSeason(ctx context.Context, owner common.Address, tokenID uint64, value *big.Int) (bool, error) {
 	addr := r.cl.Net.Contracts.DealersBankHeist
 	if addr == (common.Address{}) {
 		return false, fmt.Errorf("bank heist contract not deployed")
@@ -127,7 +159,7 @@ func (r *Reader) CanEnterSeason(ctx context.Context, owner common.Address, token
 	}
 	// enter() returns nothing, so an empty result with no error means "would pass";
 	// call the client directly (r.call treats empty output as an error).
-	if _, err := r.cl.CallContract(ctx, ethereum.CallMsg{From: owner, To: &addr, Data: data}); err != nil {
+	if _, err := r.cl.CallContract(ctx, ethereum.CallMsg{From: owner, To: &addr, Data: data, Value: value}); err != nil {
 		if isRevert(err) {
 			return false, nil // definitive: the entry would revert
 		}
